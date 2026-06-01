@@ -4,6 +4,13 @@ import re
 
 from .models import SDMRequirements, ValidationReport, Violation
 
+CRITICAL_FIELD_PREFIXES = {
+    "occurrence.total_presences",
+    "occurrence.total_absences",
+    "occurrence.occurrence_type",
+    "models",
+}
+
 # ---------------------------------------------------------------------------
 # Known vocabularies
 # ---------------------------------------------------------------------------
@@ -31,9 +38,7 @@ KNOWN_ALGORITHMS = {
 
 OCCURRENCE_TYPES = {"presence-only", "presence-absence", "abundance"}
 
-BINOMIAL_PATTERN = re.compile(
-    r"^[A-Z][a-z]+ [a-z]+(?:\s+(?:subsp\.|var\.)\s+[a-z]+)?$"
-)
+BINOMIAL_PATTERN = re.compile(r"^[A-Z][a-z]+ [a-z]+(?:\s+(?:subsp\.|var\.)\s+[a-z]+)?$")
 
 
 def validate(requirements: SDMRequirements) -> ValidationReport:
@@ -47,9 +52,7 @@ def validate(requirements: SDMRequirements) -> ValidationReport:
 
     num_errors = sum(1 for v in violations if v.severity == "error")
     num_warnings = len(violations) - num_errors
-    return ValidationReport(
-        violations=violations, num_errors=num_errors, num_warnings=num_warnings
-    )
+    return ValidationReport(violations=violations, num_errors=num_errors, num_warnings=num_warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +154,7 @@ def _check_models(req: SDMRequirements, violations: list[Violation]) -> None:
                     )
 
 
-def _check_evaluation_metrics(
-    req: SDMRequirements, violations: list[Violation]
-) -> None:
+def _check_evaluation_metrics(req: SDMRequirements, violations: list[Violation]) -> None:
     for i, metric in enumerate(req.evaluation.metrics_used):
         if not any(metric.upper() == m.upper() for m in KNOWN_METRICS):
             violations.append(
@@ -183,3 +184,20 @@ def _check_key_predictors(req: SDMRequirements, violations: list[Violation]) -> 
                     severity="error",
                 )
             )
+
+
+def get_critical_errors(report: ValidationReport) -> list[Violation]:
+    return [
+        v
+        for v in report.violations
+        if v.severity == "error"
+        and any(v.field_path.startswith(p) for p in CRITICAL_FIELD_PREFIXES)
+    ]
+
+
+def violations_by_section(report: ValidationReport) -> dict[str, list[Violation]]:
+    groups: dict[str, list[Violation]] = {}
+    for v in report.violations:
+        section = v.field_path.split(".")[0].split("[")[0]
+        groups.setdefault(section, []).append(v)
+    return groups

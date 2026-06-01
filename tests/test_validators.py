@@ -69,8 +69,7 @@ def test_species_binomial_warning_lowercase_genus():
     )
     report = validate(req)
     assert any(
-        v.field_path == "study.species[0]" and v.severity == "warning"
-        for v in report.violations
+        v.field_path == "study.species[0]" and v.severity == "warning" for v in report.violations
     )
 
 
@@ -84,11 +83,7 @@ def test_species_binomial_warning_single_word():
 
 def test_species_subspecies_valid():
     req = VALID_REQUIREMENTS.model_copy(
-        update={
-            "study": StudyMetadata(
-                title="Test", species=["Bufo marinus subsp. africanus"]
-            )
-        }
+        update={"study": StudyMetadata(title="Test", species=["Bufo marinus subsp. africanus"])}
     )
     report = validate(req)
     assert not any(v.field_path.startswith("study.species") for v in report.violations)
@@ -109,9 +104,7 @@ def test_occurrence_type_invalid():
 
 
 def test_occurrence_presences_zero():
-    req = VALID_REQUIREMENTS.model_copy(
-        update={"occurrence": OccurrenceData(total_presences=0)}
-    )
+    req = VALID_REQUIREMENTS.model_copy(update={"occurrence": OccurrenceData(total_presences=0)})
     report = validate(req)
     assert any(
         v.field_path == "occurrence.total_presences" and v.severity == "error"
@@ -120,9 +113,7 @@ def test_occurrence_presences_zero():
 
 
 def test_occurrence_absences_negative():
-    req = VALID_REQUIREMENTS.model_copy(
-        update={"occurrence": OccurrenceData(total_absences=-5)}
-    )
+    req = VALID_REQUIREMENTS.model_copy(update={"occurrence": OccurrenceData(total_absences=-5)})
     report = validate(req)
     assert any(
         v.field_path == "occurrence.total_absences" and v.severity == "error"
@@ -132,16 +123,11 @@ def test_occurrence_absences_negative():
 
 def test_occurrence_presence_only_with_absences():
     req = VALID_REQUIREMENTS.model_copy(
-        update={
-            "occurrence": OccurrenceData(
-                occurrence_type="presence-only", total_absences=100
-            )
-        }
+        update={"occurrence": OccurrenceData(occurrence_type="presence-only", total_absences=100)}
     )
     report = validate(req)
     assert any(
-        v.field_path == "occurrence.total_absences"
-        and "presence-only" in v.rule
+        v.field_path == "occurrence.total_absences" and "presence-only" in v.rule
         for v in report.violations
     )
 
@@ -149,9 +135,7 @@ def test_occurrence_presence_only_with_absences():
 def test_occurrence_none_values_no_violations():
     req = VALID_REQUIREMENTS.model_copy(update={"occurrence": OccurrenceData()})
     report = validate(req)
-    assert not any(
-        v.field_path.startswith("occurrence") for v in report.violations
-    )
+    assert not any(v.field_path.startswith("occurrence") for v in report.violations)
 
 
 # --- Performance metric checks ---
@@ -253,14 +237,11 @@ def test_auc_boundary_values():
 
 def test_unknown_algorithm_warning():
     req = VALID_REQUIREMENTS.model_copy(
-        update={
-            "models": [SDMModelSpec(algorithm="DeepSpeciesNet", performance=[])]
-        }
+        update={"models": [SDMModelSpec(algorithm="DeepSpeciesNet", performance=[])]}
     )
     report = validate(req)
     assert any(
-        v.field_path == "models[0].algorithm" and v.severity == "warning"
-        for v in report.violations
+        v.field_path == "models[0].algorithm" and v.severity == "warning" for v in report.violations
     )
 
 
@@ -294,9 +275,7 @@ def test_known_evaluation_metrics_no_warning():
         update={"evaluation": EvaluationProtocol(metrics_used=["AUC", "TSS", "Boyce"])}
     )
     report = validate(req)
-    assert not any(
-        v.field_path.startswith("evaluation.metrics_used") for v in report.violations
-    )
+    assert not any(v.field_path.startswith("evaluation.metrics_used") for v in report.violations)
 
 
 # --- Key predictors consistency ---
@@ -318,19 +297,13 @@ def test_key_predictors_case_insensitive():
         update={"results": SDMResults(key_predictors=["bio1", "Elevation"])}
     )
     report = validate(req)
-    assert not any(
-        v.field_path.startswith("results.key_predictors") for v in report.violations
-    )
+    assert not any(v.field_path.startswith("results.key_predictors") for v in report.violations)
 
 
 def test_key_predictors_empty_skips_check():
-    req = VALID_REQUIREMENTS.model_copy(
-        update={"results": SDMResults(key_predictors=[])}
-    )
+    req = VALID_REQUIREMENTS.model_copy(update={"results": SDMResults(key_predictors=[])})
     report = validate(req)
-    assert not any(
-        v.field_path.startswith("results.key_predictors") for v in report.violations
-    )
+    assert not any(v.field_path.startswith("results.key_predictors") for v in report.violations)
 
 
 def test_variables_empty_skips_check():
@@ -341,9 +314,7 @@ def test_variables_empty_skips_check():
         }
     )
     report = validate(req)
-    assert not any(
-        v.field_path.startswith("results.key_predictors") for v in report.violations
-    )
+    assert not any(v.field_path.startswith("results.key_predictors") for v in report.violations)
 
 
 # --- Multiple violations ---
@@ -366,3 +337,54 @@ def test_multiple_violations_counted():
     assert report.num_errors >= 2
     assert report.num_warnings >= 1
     assert not report.is_valid
+
+
+# ---------------------------------------------------------------------------
+# Validator helper tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_critical_errors():
+    from lit_review.validators import get_critical_errors
+
+    req = VALID_REQUIREMENTS.model_copy(
+        update={
+            "occurrence": OccurrenceData(
+                occurrence_type="invalid-type",
+                total_presences=0,
+            ),
+        }
+    )
+    report = validate(req)
+    critical = get_critical_errors(report)
+    assert len(critical) >= 1
+    assert all(v.severity == "error" for v in critical)
+
+
+def test_get_critical_errors_ignores_warnings():
+    from lit_review.validators import get_critical_errors
+
+    req = VALID_REQUIREMENTS.model_copy(
+        update={
+            "study": StudyMetadata(title="Test", species=["cane toad"]),
+        }
+    )
+    report = validate(req)
+    assert report.num_warnings >= 1
+    critical = get_critical_errors(report)
+    assert len(critical) == 0
+
+
+def test_violations_by_section():
+    from lit_review.validators import violations_by_section
+
+    req = VALID_REQUIREMENTS.model_copy(
+        update={
+            "occurrence": OccurrenceData(occurrence_type="invalid"),
+            "study": StudyMetadata(title="Test", species=["cane toad"]),
+        }
+    )
+    report = validate(req)
+    groups = violations_by_section(report)
+    assert "occurrence" in groups
+    assert "study" in groups

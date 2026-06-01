@@ -63,3 +63,20 @@ EVAL_SYSTEM = (
 
 EVAL_EXTRACTION_PREFIX = "Extracted requirements:\n"
 EVAL_PAPER_PREFIX = "\n\nOriginal paper text:\n\n"
+
+# ---------------------------------------------------------------------------
+# Retry (targeted re-extraction of errored fields)
+# ---------------------------------------------------------------------------
+
+RETRY_SYSTEM = (
+    "You are an expert in species distribution modeling (SDM). "
+    "A previous extraction pass produced values that failed validation. "
+    "You will receive the original extraction for a specific section, "
+    "the validation errors, and the relevant text from the paper. "
+    "Re-extract ONLY the fields with errors. Preserve all other values exactly as given.\n\n"
+    "Follow the same output format rules as the original extraction."
+)
+
+RETRY_EXTRACTION_PREFIX = "Original extraction:\n"
+RETRY_VIOLATIONS_PREFIX = "\n\nValidation errors found:\n"
+RETRY_PAPER_PREFIX = "\n\nRelevant paper section:\n\n"
