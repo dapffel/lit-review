@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class AgentConfig(BaseModel):
     model: str = "gpt-4"
+    eval_model: str | None = Field(
+        default=None,
+        description=(
+            "Model used for the evaluation/verification step. "
+            "Defaults to the extraction model when not set."
+        ),
+    )
     embedding_model: str = "text-embedding-ada-002"
     temperature: float = Field(default=0.2, ge=0, le=1)
     max_reference_docs: int = Field(default=10, gt=0)
@@ -280,12 +287,24 @@ class ExtractionEval(BaseModel):
     field_verifications: list[FieldVerification] = Field(
         description="Verification result for each substantive extracted field"
     )
-    num_verified: int = Field(description="Count of fields classified as verified")
-    num_inaccurate: int = Field(description="Count of fields classified as inaccurate")
-    num_unverifiable: int = Field(description="Count of fields classified as unverifiable")
     overall_assessment: str = Field(
         description="Brief overall assessment of extraction quality and any key issues found"
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def num_verified(self) -> int:
+        return sum(1 for fv in self.field_verifications if fv.status == "verified")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def num_inaccurate(self) -> int:
+        return sum(1 for fv in self.field_verifications if fv.status == "inaccurate")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def num_unverifiable(self) -> int:
+        return sum(1 for fv in self.field_verifications if fv.status == "unverifiable")
 
 
 # ---------------------------------------------------------------------------

@@ -59,8 +59,6 @@ def _drop_empty(value: Any) -> Any:
     if isinstance(value, dict):
         cleaned = {}
         for key, item in value.items():
-            if key == "evidence":
-                continue
             c = _drop_empty(item)
             if c is None or c == [] or c == {}:
                 continue
@@ -117,7 +115,7 @@ class SDMExtractionAgent:
         user_content = _build_eval_content(requirements_json, text, self.config.max_input_chars)
 
         return await self.client.create(
-            model=self.config.model,
+            model=self.config.eval_model or self.config.model,
             response_model=ExtractionEval,
             messages=[
                 {"role": "system", "content": EVAL_SYSTEM},

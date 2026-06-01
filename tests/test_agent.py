@@ -92,9 +92,6 @@ FAKE_EVAL = ExtractionEval(
             evidence="Models were fit using MaxEnt",
         ),
     ],
-    num_verified=2,
-    num_inaccurate=0,
-    num_unverifiable=0,
     overall_assessment="Extraction accurately reflects the paper.",
 )
 
@@ -312,8 +309,23 @@ async def test_evaluate_calls_llm_with_eval_prompt(mock_instructor, mock_extract
     call_args = mock_create.call_args
     assert call_args.kwargs["response_model"] is ExtractionEval
     user_msg = call_args.kwargs["messages"][1]["content"]
+    assert call_args.kwargs["model"] == "gpt-4"
     assert EVAL_EXTRACTION_PREFIX in user_msg
     assert FAKE_TEXT in user_msg
+
+
+@patch("lit_review.agent.extract_text", return_value=FAKE_TEXT)
+@patch("lit_review.agent.instructor")
+async def test_evaluate_uses_eval_model(mock_instructor, mock_extract):
+    mock_create = AsyncMock(return_value=FAKE_EVAL)
+    mock_instructor.from_litellm.return_value.create = mock_create
+
+    config = AgentConfig(model="gpt-4", eval_model="anthropic/claude-sonnet-4-6")
+    agent = SDMExtractionAgent(config)
+    await agent.evaluate(FAKE_REQUIREMENTS, "fake.pdf")
+
+    call_args = mock_create.call_args
+    assert call_args.kwargs["model"] == "anthropic/claude-sonnet-4-6"
 
 
 @patch("lit_review.agent.extract_text", return_value="")
@@ -330,6 +342,22 @@ def test_eval_content_respects_max_chars():
     content = _build_eval_content(req_json, paper, max_chars=200)
     assert len(content) == 200
     assert content.startswith(EVAL_EXTRACTION_PREFIX)
+
+
+def test_drop_empty_preserves_evidence():
+    from lit_review.agent import _drop_empty
+
+    data = {
+        "study": {
+            "title": "Test",
+            "species": ["Bufo marinus"],
+            "evidence": "the cane toad (Bufo marinus)",
+            "geographic_extent": None,
+        }
+    }
+    cleaned = _drop_empty(data)
+    assert cleaned["study"]["evidence"] == "the cane toad (Bufo marinus)"
+    assert "geographic_extent" not in cleaned["study"]
 
 
 def test_eval_content_includes_both_sections():
@@ -374,11 +402,35 @@ def test_extraction_eval_model():
                 evidence="Paper states 350 presence records",
             ),
         ],
-        num_verified=1,
-        num_inaccurate=1,
-        num_unverifiable=0,
         overall_assessment="One field inaccurate: presence count mismatch.",
     )
     assert len(eval_result.field_verifications) == 2
     assert eval_result.num_verified == 1
     assert eval_result.num_inaccurate == 1
+
+
+def test_computed_eval_counts_in_model_dump():
+    eval_result = ExtractionEval(
+        field_verifications=[
+            FieldVerification(
+                field_path="study.species",
+                extracted_value="['Bufo marinus']",
+                status="verified",
+            ),
+            FieldVerification(
+                field_path="occurrence.total_presences",
+                extracted_value="500",
+                status="inaccurate",
+            ),
+            FieldVerification(
+                field_path="predictors.variables",
+                extracted_value="['BIO1']",
+                status="unverifiable",
+            ),
+        ],
+        overall_assessment="Mixed results.",
+    )
+    data = eval_result.model_dump()
+    assert data["num_verified"] == 1
+    assert data["num_inaccurate"] == 1
+    assert data["num_unverifiable"] == 1
