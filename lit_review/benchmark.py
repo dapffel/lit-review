@@ -6,12 +6,7 @@ import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from .models import (
-    BenchmarkResult,
-    BenchmarkSummary,
-    FieldScore,
-    SDMRequirements,
-)
+from .models import BenchmarkResult, BenchmarkSummary, FieldScore, SDMRequirements
 
 FLOAT_TOLERANCE = 0.01
 
@@ -39,9 +34,7 @@ def _compare_numbers(expected: int | float, actual: int | float) -> bool:
     return abs(float(expected) - float(actual)) <= FLOAT_TOLERANCE
 
 
-def _compare_fields(
-    gold: SDMRequirements, extracted: SDMRequirements
-) -> list[FieldScore]:
+def _compare_fields(gold: SDMRequirements, extracted: SDMRequirements) -> list[FieldScore]:
     scores: list[FieldScore] = []
 
     if gold.study.title:
@@ -55,9 +48,7 @@ def _compare_fields(
         )
 
     if gold.study.species:
-        matched, total_exp, total_act = _compare_lists(
-            gold.study.species, extracted.study.species
-        )
+        matched, total_exp, total_act = _compare_lists(gold.study.species, extracted.study.species)
         scores.append(
             FieldScore(
                 field_path="study.species",
@@ -84,9 +75,7 @@ def _compare_fields(
         scores.append(
             FieldScore(
                 field_path="occurrence.occurrence_type",
-                match=(
-                    gold.occurrence.occurrence_type == extracted.occurrence.occurrence_type
-                ),
+                match=(gold.occurrence.occurrence_type == extracted.occurrence.occurrence_type),
                 expected=gold.occurrence.occurrence_type,
                 actual=extracted.occurrence.occurrence_type or "",
             )
@@ -175,9 +164,7 @@ def _compare_fields(
             scores.append(
                 FieldScore(
                     field_path=f"models[{idx}].software",
-                    match=_compare_strings(
-                        gold_model.software, ext_model.software or ""
-                    ),
+                    match=_compare_strings(gold_model.software, ext_model.software or ""),
                     expected=gold_model.software,
                     actual=ext_model.software or "",
                 )
@@ -279,16 +266,12 @@ class Benchmark:
     def _save_manifest(self, manifest: list[dict]) -> None:
         self.manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    def add_annotation(
-        self, pdf_path: str, requirements: SDMRequirements
-    ) -> str:
+    def add_annotation(self, pdf_path: str, requirements: SDMRequirements) -> str:
         self._ensure_dirs()
         paper_id = str(uuid.uuid4())[:8]
 
         annotation_path = self.annotations_dir / f"{paper_id}.json"
-        annotation_path.write_text(
-            json.dumps(requirements.model_dump(exclude_none=True), indent=2)
-        )
+        annotation_path.write_text(json.dumps(requirements.model_dump(exclude_none=True), indent=2))
 
         dest_pdf = self.papers_dir / f"{paper_id}.pdf"
         shutil.copy2(pdf_path, dest_pdf)
@@ -309,17 +292,13 @@ class Benchmark:
     def list_annotations(self) -> list[dict]:
         return self._load_manifest()
 
-    async def run_single(
-        self, agent: object, paper_id: str
-    ) -> BenchmarkResult:
+    async def run_single(self, agent: object, paper_id: str) -> BenchmarkResult:
         manifest = self._load_manifest()
         entry = next((e for e in manifest if e["id"] == paper_id), None)
         if entry is None:
             raise ValueError(f"Paper {paper_id} not found in manifest")
 
-        gold = SDMRequirements.model_validate_json(
-            Path(entry["annotation_path"]).read_text()
-        )
+        gold = SDMRequirements.model_validate_json(Path(entry["annotation_path"]).read_text())
 
         extracted = await agent.extract_from_pdf(entry["pdf_path"])  # type: ignore[attr-defined]
 
@@ -343,9 +322,7 @@ class Benchmark:
             result = await self.run_single(agent, entry["id"])
             results.append(result)
 
-        total_matched = sum(
-            sum(1 for s in r.scores if s.match) for r in results
-        )
+        total_matched = sum(sum(1 for s in r.scores if s.match) for r in results)
         total_fields = sum(len(r.scores) for r in results)
 
         overall_precision = total_matched / total_fields if total_fields else 0.0
@@ -357,9 +334,7 @@ class Benchmark:
                 base_path = s.field_path.split("[")[0] if "[" in s.field_path else s.field_path
                 field_hits.setdefault(base_path, []).append(s.match)
 
-        per_field_accuracy = {
-            path: sum(hits) / len(hits) for path, hits in field_hits.items()
-        }
+        per_field_accuracy = {path: sum(hits) / len(hits) for path, hits in field_hits.items()}
 
         return BenchmarkSummary(
             results=results,

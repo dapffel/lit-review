@@ -4,20 +4,30 @@ import pytest
 
 from lit_review import (
     AgentConfig,
+    ConfidenceReport,
     EnvironmentalPredictors,
     EvaluationProtocol,
     ExtractionEval,
     FieldVerification,
     OccurrenceData,
+    PaperSections,
     PerformanceMetric,
+    PipelineResult,
     ProjectedScenario,
+    QualityScore,
     SDMExtractionAgent,
     SDMModelSpec,
     SDMRequirements,
     SDMResults,
     StudyMetadata,
+    ValidationReport,
 )
-from lit_review.agent import _build_eval_content, _retrieval_query
+from lit_review.agent import (
+    _build_eval_content,
+    _retrieval_query,
+    compute_quality,
+    score_confidence,
+)
 from lit_review.prompts import EVAL_EXTRACTION_PREFIX, EVAL_PAPER_PREFIX
 
 FAKE_REQUIREMENTS = SDMRequirements(
@@ -308,6 +318,7 @@ async def test_evaluate_calls_llm_with_eval_prompt(mock_instructor, mock_extract
 
     call_args = mock_create.call_args
     assert call_args.kwargs["response_model"] is ExtractionEval
+    assert call_args.kwargs["model"] == "gpt-4"
     user_msg = call_args.kwargs["messages"][1]["content"]
     assert call_args.kwargs["model"] == "gpt-4"
     assert EVAL_EXTRACTION_PREFIX in user_msg
@@ -434,3 +445,222 @@ def test_computed_eval_counts_in_model_dump():
     assert data["num_verified"] == 1
     assert data["num_inaccurate"] == 1
     assert data["num_unverifiable"] == 1
+
+
+
+# ---------------------------------------------------------------------------
+# Confidence scoring tests
+# ---------------------------------------------------------------------------
+
+
+def test_score_confidence_strong_evidence():
+    reqs = FAKE_REQUIREMENTS.model_copy(
+        update={
+            "study": FAKE_REQUIREMENTS.study.model_copy(update={"evidence": "x" * 100}),
+            "occurrence": FAKE_REQUIREMENTS.occurrence.model_copy(update={"evidence": "x" * 100}),
+            "predictors": FAKE_REQUIREMENTS.predictors.model_copy(update={"evidence": "x" * 100}),
+            "evaluation": FAKE_REQUIREMENTS.evaluation.model_copy(update={"evidence": "x" * 100}),
+            "results": FAKE_REQUIREMENTS.results.model_copy(update={"evidence": "x" * 100}),
+        }
+    )
+    report = score_confidence(reqs)
+    assert report.num_high >= 5
+    assert report.num_low == 0
+
+
+def test_score_confidence_missing_evidence():
+    minimal = SDMRequirements(study=StudyMetadata(title="A paper"))
+    report = score_confidence(minimal)
+    assert report.num_low >= 4
+
+
+def test_score_confidence_no_species():
+    reqs = SDMRequirements(study=StudyMetadata(title="A paper", species=[], evidence="x" * 100))
+    report = score_confidence(reqs)
+    study_score = next(f for f in report.field_scores if f.field_path == "study")
+    assert study_score.confidence == "low"
+
+
+def test_score_confidence_no_models():
+    reqs = SDMRequirements(study=StudyMetadata(title="A paper"), models=[])
+    report = score_confidence(reqs)
+    models_score = next(f for f in report.field_scores if f.field_path == "models")
+    assert models_score.confidence == "low"
+
+
+# ---------------------------------------------------------------------------
+# Quality scoring tests
+# ---------------------------------------------------------------------------
+
+
+def test_compute_quality_perfect():
+    validation = ValidationReport(violations=[], num_errors=0, num_warnings=0)
+    evaluation = ExtractionEval(
+        field_verifications=[
+            FieldVerification(
+                field_path="study.species",
+                extracted_value="['Bufo marinus']",
+                status="verified",
+            ),
+        ],
+        overall_assessment="All good.",
+    )
+    confidence = ConfidenceReport(
+        field_scores=[
+            __import__("lit_review.models", fromlist=["FieldConfidence"]).FieldConfidence(
+                field_path="study", confidence="high", reason="ok"
+            )
+        ]
+    )
+    quality = compute_quality(validation, evaluation, confidence)
+    assert quality.score >= 0.7
+    assert quality.grade == "pass"
+
+
+def test_compute_quality_many_errors():
+    from lit_review.models import FieldConfidence, Violation
+
+    validation = ValidationReport(
+        violations=[
+            Violation(
+                field_path=f"models[{i}].performance[0].value",
+                rule="AUC must be between 0 and 1",
+                actual_value="1.5",
+                severity="error",
+            )
+            for i in range(5)
+        ],
+        num_errors=5,
+        num_warnings=0,
+    )
+    evaluation = ExtractionEval(
+        field_verifications=[
+            FieldVerification(
+                field_path="study.species",
+                extracted_value="wrong",
+                status="inaccurate",
+            ),
+        ],
+        overall_assessment="Poor.",
+    )
+    confidence = ConfidenceReport(
+        field_scores=[FieldConfidence(field_path="study", confidence="low", reason="bad")]
+    )
+    quality = compute_quality(validation, evaluation, confidence)
+    assert quality.grade == "fail"
+    assert quality.score < 0.4
+
+
+def test_compute_quality_none_inputs():
+    quality = compute_quality(None, None, None)
+    assert quality.score == 0.5
+    assert quality.grade == "marginal"
+
+
+def test_quality_grade_boundaries():
+    from lit_review.models import FieldConfidence
+
+    validation = ValidationReport(violations=[], num_errors=0, num_warnings=0)
+    evaluation = ExtractionEval(
+        field_verifications=[
+            FieldVerification(field_path="a", extracted_value="v", status="verified"),
+        ],
+        overall_assessment="ok",
+    )
+    confidence = ConfidenceReport(
+        field_scores=[FieldConfidence(field_path="study", confidence="high", reason="ok")]
+    )
+    quality = compute_quality(validation, evaluation, confidence)
+    assert quality.grade == "pass"
+
+
+# ---------------------------------------------------------------------------
+# Evaluate with sections
+# ---------------------------------------------------------------------------
+
+
+@patch("lit_review.agent.instructor")
+async def test_evaluate_with_sections(mock_instructor):
+    mock_create = AsyncMock(return_value=FAKE_EVAL)
+    mock_instructor.from_litellm.return_value.create = mock_create
+
+    sections = PaperSections(
+        raw_text="full text",
+        sections={
+            "abstract": "Abstract text.",
+            "methods": "Methods: used MaxEnt.",
+            "results": "Results: AUC=0.79.",
+        },
+    )
+
+    agent = SDMExtractionAgent()
+    result = await agent.evaluate(FAKE_REQUIREMENTS, sections=sections)
+
+    assert result.num_verified == 2
+    call_args = mock_create.call_args
+    user_msg = call_args.kwargs["messages"][1]["content"]
+    assert "MaxEnt" in user_msg
+    assert "AUC" in user_msg
+
+
+async def test_evaluate_requires_pdf_or_sections():
+    agent = SDMExtractionAgent()
+    with pytest.raises(ValueError, match="Either pdf_path or sections"):
+        await agent.evaluate(FAKE_REQUIREMENTS)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline integration test
+# ---------------------------------------------------------------------------
+
+
+PIPELINE_TEXT = """Abstract about cane toads in Australia.
+
+Methods
+We used MaxEnt with 1183 presence records from GBIF.
+Environmental variables: BIO1, BIO12, elevation.
+
+Results
+AUC = 0.79. BIO1 was the most important predictor.
+"""
+
+
+@patch("lit_review.agent.extract_text", return_value=PIPELINE_TEXT)
+@patch("lit_review.agent.instructor")
+async def test_run_pipeline_full(mock_instructor, mock_extract):
+    mock_create = AsyncMock(side_effect=[FAKE_REQUIREMENTS, FAKE_EVAL])
+    mock_instructor.from_litellm.return_value.create = mock_create
+
+    agent = SDMExtractionAgent()
+    result = await agent.run_pipeline("fake.pdf", run_validation=True, run_evaluation=True)
+
+    assert isinstance(result, PipelineResult)
+    assert result.requirements == FAKE_REQUIREMENTS
+    assert result.confidence is not None
+    assert result.validation is not None
+    assert result.evaluation is not None
+    assert result.quality is not None
+    assert result.quality.grade in ("pass", "marginal", "fail")
+    assert len(result.sections_used) > 0
+
+
+@patch("lit_review.agent.extract_text", return_value=PIPELINE_TEXT)
+@patch("lit_review.agent.instructor")
+async def test_run_pipeline_no_eval(mock_instructor, mock_extract):
+    mock_create = AsyncMock(return_value=FAKE_REQUIREMENTS)
+    mock_instructor.from_litellm.return_value.create = mock_create
+
+    agent = SDMExtractionAgent()
+    result = await agent.run_pipeline("fake.pdf", run_evaluation=False)
+
+    assert result.evaluation is None
+    assert result.quality is not None
+    assert mock_create.call_count == 1
+
+
+@patch("lit_review.agent.extract_text", return_value="")
+@patch("lit_review.agent.instructor")
+async def test_run_pipeline_empty_pdf(mock_instructor, mock_extract):
+    agent = SDMExtractionAgent()
+    with pytest.raises(ValueError, match="no extractable text"):
+        await agent.run_pipeline("empty.pdf")

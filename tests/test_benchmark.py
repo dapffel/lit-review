@@ -214,9 +214,7 @@ def test_add_annotation(tmp_path):
     assert manifest[0]["id"] == paper_id
     assert manifest[0]["title"] == GOLD.study.title
 
-    annotation = json.loads(
-        Path(manifest[0]["annotation_path"]).read_text()
-    )
+    annotation = json.loads(Path(manifest[0]["annotation_path"]).read_text())
     assert annotation["study"]["title"] == GOLD.study.title
 
     assert Path(manifest[0]["pdf_path"]).exists()

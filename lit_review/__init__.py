@@ -1,17 +1,22 @@
-from .agent import SDMExtractionAgent
+from .agent import SDMExtractionAgent, compute_quality, score_confidence
 from .benchmark import Benchmark
 from .models import (
     AgentConfig,
     BenchmarkResult,
     BenchmarkSummary,
+    ConfidenceReport,
     EnvironmentalPredictors,
     EvaluationProtocol,
     ExtractionEval,
+    FieldConfidence,
     FieldScore,
     FieldVerification,
     OccurrenceData,
+    PaperSections,
     PerformanceMetric,
+    PipelineResult,
     ProjectedScenario,
+    QualityScore,
     SDMModelSpec,
     SDMRequirements,
     SDMResults,
@@ -19,7 +24,8 @@ from .models import (
     ValidationReport,
     Violation,
 )
-from .validators import validate
+from .sections import parse_sections
+from .validators import get_critical_errors, validate, violations_by_section
 
 __all__ = [
     "SDMExtractionAgent",
@@ -27,19 +33,29 @@ __all__ = [
     "AgentConfig",
     "BenchmarkResult",
     "BenchmarkSummary",
+    "ConfidenceReport",
     "EnvironmentalPredictors",
     "EvaluationProtocol",
     "ExtractionEval",
+    "FieldConfidence",
     "FieldScore",
     "FieldVerification",
     "OccurrenceData",
+    "PaperSections",
     "PerformanceMetric",
+    "PipelineResult",
     "ProjectedScenario",
+    "QualityScore",
     "SDMModelSpec",
     "SDMRequirements",
     "SDMResults",
     "StudyMetadata",
     "ValidationReport",
     "Violation",
+    "compute_quality",
+    "get_critical_errors",
+    "parse_sections",
+    "score_confidence",
     "validate",
+    "violations_by_section",
 ]
