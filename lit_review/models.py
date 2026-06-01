@@ -283,7 +283,7 @@ class FieldVerification(BaseModel):
         )
     )
     extracted_value: str = Field(description="The value that was extracted for this field")
-    status: str = Field(
+    status: Literal["verified", "inaccurate", "unverifiable"] = Field(
         description=(
             "'verified' if the extraction accurately reflects the paper, "
             "'inaccurate' if it contradicts or misrepresents the paper, "

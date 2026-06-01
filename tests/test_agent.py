@@ -447,7 +447,6 @@ def test_computed_eval_counts_in_model_dump():
     assert data["num_unverifiable"] == 1
 
 
-
 # ---------------------------------------------------------------------------
 # Confidence scoring tests
 # ---------------------------------------------------------------------------
@@ -664,3 +663,98 @@ async def test_run_pipeline_empty_pdf(mock_instructor, mock_extract):
     agent = SDMExtractionAgent()
     with pytest.raises(ValueError, match="no extractable text"):
         await agent.run_pipeline("empty.pdf")
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_field_verification_status_constrained():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        FieldVerification(
+            field_path="study.species",
+            extracted_value="['Bufo marinus']",
+            status="Verified",
+        )
+
+
+def test_pipeline_falls_back_to_raw_text_without_key_sections():
+    text = "Abstract about cane toads.\n\nSome body text with methods and results inline."
+    from lit_review.sections import parse_sections
+
+    sections = parse_sections(text)
+    assert "methods" not in sections.sections
+    assert "results" not in sections.sections
+
+    has_key = "methods" in sections.sections or "results" in sections.sections
+    if has_key:
+        extraction_text = sections.get_sections("abstract", "methods", "results")
+    else:
+        extraction_text = sections.raw_text
+    assert extraction_text == text
+
+
+PIPELINE_TEXT_WITH_ERRORS = """Abstract about cane toads in Australia.
+
+Methods
+We used MaxEnt with 1183 presence records from GBIF.
+
+Results
+AUC = 0.79.
+"""
+
+BAD_REQUIREMENTS = SDMRequirements(
+    study=StudyMetadata(
+        title="Test",
+        species=["Bufo marinus"],
+    ),
+    occurrence=OccurrenceData(
+        occurrence_type="presence-absence",
+        total_presences=1183,
+    ),
+    predictors=EnvironmentalPredictors(variables=["BIO1"]),
+    models=[
+        SDMModelSpec(
+            algorithm="MaxEnt",
+            performance=[PerformanceMetric(metric="AUC", value=1.5)],
+        ),
+    ],
+    evaluation=EvaluationProtocol(metrics_used=["AUC"]),
+    results=SDMResults(key_predictors=["BIO1"]),
+)
+
+FIXED_REQUIREMENTS = BAD_REQUIREMENTS.model_copy(
+    update={
+        "models": [
+            SDMModelSpec(
+                algorithm="MaxEnt",
+                performance=[PerformanceMetric(metric="AUC", value=0.79)],
+            ),
+        ],
+    }
+)
+
+
+@patch("lit_review.agent.extract_text", return_value=PIPELINE_TEXT_WITH_ERRORS)
+@patch("lit_review.agent.instructor")
+async def test_retry_handles_models_errors(mock_instructor, mock_extract):
+    from lit_review.agent import _ModelsRetry
+
+    mock_create = AsyncMock(
+        side_effect=[
+            BAD_REQUIREMENTS,
+            _ModelsRetry(models=FIXED_REQUIREMENTS.models),
+            FAKE_EVAL,
+        ]
+    )
+    mock_instructor.from_litellm.return_value.create = mock_create
+
+    agent = SDMExtractionAgent()
+    result = await agent.run_pipeline("fake.pdf")
+
+    assert result.retries_performed == 1
+    assert result.requirements.models[0].performance[0].value == 0.79
+    assert mock_create.call_count == 3

@@ -4,7 +4,7 @@ from typing import Any, Literal
 import instructor
 import litellm
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .memory import VectorMemory
 from .models import (
@@ -18,6 +18,7 @@ from .models import (
     PaperSections,
     PipelineResult,
     QualityScore,
+    SDMModelSpec,
     SDMRequirements,
     SDMResults,
     ValidationReport,
@@ -49,11 +50,19 @@ EVIDENCE_HIGH_THRESHOLD = 80
 ConfidenceLevel = Literal["high", "medium", "low"]
 Grade = Literal["pass", "marginal", "fail"]
 
+
+class _ModelsRetry(BaseModel):
+    models: list[SDMModelSpec] = Field(
+        description="Re-extracted list of SDM model specs with corrected values."
+    )
+
+
 SECTION_TO_MODEL: dict[str, type[BaseModel]] = {
     "occurrence": OccurrenceData,
     "predictors": EnvironmentalPredictors,
     "evaluation": EvaluationProtocol,
     "results": SDMResults,
+    "models": _ModelsRetry,
 }
 
 
@@ -313,10 +322,11 @@ class SDMExtractionAgent:
 
         model_cls = SECTION_TO_MODEL[section_name]
         section_data = getattr(requirements, section_name)
-        section_json = json.dumps(
-            _drop_empty(section_data.model_dump()),
-            indent=2,
-        )
+        if isinstance(section_data, list):
+            raw = [_drop_empty(item.model_dump()) for item in section_data]
+        else:
+            raw = _drop_empty(section_data.model_dump())
+        section_json = json.dumps(raw, indent=2)
         violations_text = "\n".join(
             f"- {v.field_path}: {v.rule} (got: {v.actual_value})" for v in violations
         )
@@ -336,7 +346,10 @@ class SDMExtractionAgent:
             temperature=self.config.temperature,
         )
 
-        updated = requirements.model_copy(update={section_name: corrected})
+        if isinstance(corrected, _ModelsRetry):
+            updated = requirements.model_copy(update={"models": corrected.models})
+        else:
+            updated = requirements.model_copy(update={section_name: corrected})
         return updated
 
     async def run_pipeline(
@@ -366,7 +379,11 @@ class SDMExtractionAgent:
             context_chunks = await memory.query(_retrieval_query(text))
             context = "\n\n".join(context_chunks)
 
-        extraction_text = sections.get_sections("abstract", "methods", "results")
+        has_key_sections = "methods" in sections.sections or "results" in sections.sections
+        if has_key_sections:
+            extraction_text = sections.get_sections("abstract", "methods", "results")
+        else:
+            extraction_text = sections.raw_text
         user_content = _build_extraction_content(
             extraction_text, context, self.config.max_input_chars
         )
