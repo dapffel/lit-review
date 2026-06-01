@@ -225,6 +225,22 @@ class SDMResults(BaseModel):
     )
 
 
+class PaperSections(BaseModel):
+    raw_text: str = Field(description="Full original text for fallback")
+    sections: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map of normalized section heading to section text. "
+            "Keys: 'abstract', 'introduction', 'methods', 'results', "
+            "'discussion', 'references', 'supplementary'."
+        ),
+    )
+
+    def get_sections(self, *names: str) -> str:
+        parts = [self.sections[n] for n in names if n in self.sections]
+        return "\n\n".join(parts) if parts else self.raw_text
+
+
 class SDMRequirements(BaseModel):
     study: StudyMetadata = Field(description="Study metadata and focal species")
     occurrence: OccurrenceData = Field(
@@ -329,6 +345,58 @@ class ValidationReport(BaseModel):
     @property
     def is_valid(self) -> bool:
         return self.num_errors == 0
+
+
+# ---------------------------------------------------------------------------
+# Confidence models
+# ---------------------------------------------------------------------------
+
+
+class FieldConfidence(BaseModel):
+    field_path: str = Field(description="Dot-separated path, e.g. 'study.species'")
+    confidence: Literal["high", "medium", "low"] = Field(
+        description="Confidence level based on evidence quality"
+    )
+    reason: str = Field(description="Why this confidence level was assigned")
+
+
+class ConfidenceReport(BaseModel):
+    field_scores: list[FieldConfidence] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def num_high(self) -> int:
+        return sum(1 for f in self.field_scores if f.confidence == "high")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def num_low(self) -> int:
+        return sum(1 for f in self.field_scores if f.confidence == "low")
+
+
+# ---------------------------------------------------------------------------
+# Quality models
+# ---------------------------------------------------------------------------
+
+
+class QualityScore(BaseModel):
+    score: float = Field(ge=0, le=1, description="Overall quality 0-1")
+    grade: Literal["pass", "marginal", "fail"] = Field(
+        description="pass >= 0.7, marginal >= 0.4, fail < 0.4"
+    )
+    reasons: list[str] = Field(default_factory=list, description="Key factors affecting the score")
+
+
+class PipelineResult(BaseModel):
+    requirements: SDMRequirements
+    sections_used: list[str] = Field(
+        default_factory=list, description="Which paper sections were identified"
+    )
+    confidence: ConfidenceReport | None = None
+    validation: ValidationReport | None = None
+    evaluation: ExtractionEval | None = None
+    quality: QualityScore | None = None
+    retries_performed: int = Field(default=0)
 
 
 # ---------------------------------------------------------------------------
