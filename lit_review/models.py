@@ -400,6 +400,46 @@ class PipelineResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Error analysis models
+# ---------------------------------------------------------------------------
+
+
+class ErrorAnalysisRow(BaseModel):
+    paper_id: str | None = Field(default=None, description="Paper or run identifier")
+    field_path: str = Field(description="Dot-separated extracted field path")
+    extracted_value: str = Field(description="Extracted value serialized for review")
+    evidence: str | None = Field(default=None, description="Evidence text attached to this field")
+    section_used: str | None = Field(
+        default=None, description="Primary section family for this field"
+    )
+    validation_status: Literal["ok", "warning", "error", "not_run"] = Field(
+        default="not_run",
+        description="Deterministic validation status for this field",
+    )
+    validation_message: str | None = Field(default=None, description="Validation rule or message")
+    eval_status: Literal["verified", "inaccurate", "unverifiable", "not_run"] = Field(
+        default="not_run",
+        description="LLM verification status for this field",
+    )
+    eval_evidence: str | None = Field(default=None, description="Verifier evidence or rationale")
+    gold_value: str | None = Field(default=None, description="Gold-standard value, if supplied")
+    match: bool | None = Field(default=None, description="Whether extracted value matches gold")
+    failure_type: str | None = Field(
+        default=None,
+        description="Coarse failure category for triage, if a problem is detected",
+    )
+    notes: str | None = Field(default=None, description="Short human-readable diagnostic note")
+
+
+class ErrorAnalysisSummary(BaseModel):
+    total_fields: int = 0
+    num_failures: int = 0
+    by_failure_type: dict[str, int] = Field(default_factory=dict)
+    by_eval_status: dict[str, int] = Field(default_factory=dict)
+    by_validation_status: dict[str, int] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Benchmark models
 # ---------------------------------------------------------------------------
 

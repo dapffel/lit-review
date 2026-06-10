@@ -1,10 +1,17 @@
 from .agent import SDMExtractionAgent, compute_quality, score_confidence
 from .benchmark import Benchmark
+from .error_analysis import (
+    analyze_pipeline_result,
+    export_error_analysis_csv,
+    summarize_error_analysis,
+)
 from .models import (
     AgentConfig,
     BenchmarkResult,
     BenchmarkSummary,
     ConfidenceReport,
+    ErrorAnalysisRow,
+    ErrorAnalysisSummary,
     EnvironmentalPredictors,
     EvaluationProtocol,
     ExtractionEval,
@@ -34,6 +41,8 @@ __all__ = [
     "BenchmarkResult",
     "BenchmarkSummary",
     "ConfidenceReport",
+    "ErrorAnalysisRow",
+    "ErrorAnalysisSummary",
     "EnvironmentalPredictors",
     "EvaluationProtocol",
     "ExtractionEval",
@@ -52,10 +61,13 @@ __all__ = [
     "StudyMetadata",
     "ValidationReport",
     "Violation",
+    "analyze_pipeline_result",
     "compute_quality",
+    "export_error_analysis_csv",
     "get_critical_errors",
     "parse_sections",
     "score_confidence",
+    "summarize_error_analysis",
     "validate",
     "violations_by_section",
 ]
