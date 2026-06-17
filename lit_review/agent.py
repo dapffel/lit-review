@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any, Literal
 
@@ -22,6 +23,7 @@ from .models import (
     SDMRequirements,
     SDMResults,
     ValidationReport,
+    Violation,
 )
 from .pdf import extract_text
 from .prompts import (
@@ -277,6 +279,7 @@ class SDMExtractionAgent:
                 {"role": "user", "content": user_content},
             ],
             temperature=self.config.temperature,
+            max_retries=self.config.request_retries,
         )
 
     async def evaluate(
@@ -308,17 +311,20 @@ class SDMExtractionAgent:
                 {"role": "user", "content": user_content},
             ],
             temperature=self.config.temperature,
+            max_retries=self.config.request_retries,
         )
 
     async def _retry_section(
         self,
         requirements: SDMRequirements,
         section_name: str,
-        violations: list,
+        violations: list[Violation],
         sections: PaperSections,
-    ) -> SDMRequirements:
+    ) -> tuple[str, Any] | None:
+        """Re-extract one errored section. Returns the (attribute, value) update to apply, or
+        None if the section is not retryable, so callers can merge several retries at once."""
         if section_name not in SECTION_TO_MODEL:
-            return requirements
+            return None
 
         model_cls = SECTION_TO_MODEL[section_name]
         section_data = getattr(requirements, section_name)
@@ -344,13 +350,12 @@ class SDMExtractionAgent:
                 {"role": "user", "content": user_content},
             ],
             temperature=self.config.temperature,
+            max_retries=self.config.request_retries,
         )
 
         if isinstance(corrected, _ModelsRetry):
-            updated = requirements.model_copy(update={"models": corrected.models})
-        else:
-            updated = requirements.model_copy(update={section_name: corrected})
-        return updated
+            return "models", corrected.models
+        return section_name, corrected
 
     async def run_pipeline(
         self,
@@ -396,6 +401,7 @@ class SDMExtractionAgent:
                 {"role": "user", "content": user_content},
             ],
             temperature=self.config.temperature,
+            max_retries=self.config.request_retries,
         )
 
         confidence = score_confidence(requirements)
@@ -418,10 +424,17 @@ class SDMExtractionAgent:
                             num_warnings=0,
                         )
                     )
-                    for sec_name, sec_violations in by_section.items():
-                        requirements = await self._retry_section(
-                            requirements, sec_name, sec_violations, sections
+                    # Errored sections are disjoint, so re-extract them concurrently and merge
+                    # the corrections in one pass.
+                    updates = await asyncio.gather(
+                        *(
+                            self._retry_section(requirements, sec_name, sec_violations, sections)
+                            for sec_name, sec_violations in by_section.items()
                         )
+                    )
+                    merged = {attr: value for u in updates if u is not None for attr, value in [u]}
+                    if merged:
+                        requirements = requirements.model_copy(update=merged)
                     retries_performed += 1
                     validation = validate(requirements)
                     confidence = score_confidence(requirements)

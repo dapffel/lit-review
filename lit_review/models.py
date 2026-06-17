@@ -23,6 +23,11 @@ class AgentConfig(BaseModel):
     )
     embedding_model: str = "text-embedding-3-small"
     temperature: float = Field(default=0.2, ge=0, le=1)
+    request_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Retries for transient LLM/schema failures per request (passed to instructor).",
+    )
     max_reference_docs: int = Field(default=10, gt=0)
     chunk_size: int = Field(default=1000, gt=0)
     chunk_overlap: int = Field(default=200, ge=0)
