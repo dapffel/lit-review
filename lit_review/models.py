@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class AgentConfig(BaseModel):
-    model: str = "gpt-4"
+    model: str = Field(
+        default="gpt-4o",
+        description=(
+            "LiteLLM model string for extraction. Defaults to a long-context model so the "
+            "max_input_chars budget fits. Any provider works, e.g. "
+            "'anthropic/claude-sonnet-4-6', 'gemini/gemini-1.5-pro'."
+        ),
+    )
     eval_model: str | None = Field(
         default=None,
         description=(
@@ -14,8 +21,13 @@ class AgentConfig(BaseModel):
             "Defaults to the extraction model when not set."
         ),
     )
-    embedding_model: str = "text-embedding-ada-002"
+    embedding_model: str = "text-embedding-3-small"
     temperature: float = Field(default=0.2, ge=0, le=1)
+    request_retries: int = Field(
+        default=2,
+        ge=0,
+        description="Retries for transient LLM/schema failures per request (passed to instructor).",
+    )
     max_reference_docs: int = Field(default=10, gt=0)
     chunk_size: int = Field(default=1000, gt=0)
     chunk_overlap: int = Field(default=200, ge=0)
@@ -449,6 +461,21 @@ class FieldScore(BaseModel):
     match: bool = Field(description="Whether extracted value matches gold standard")
     expected: str = Field(description="Gold-standard value as string")
     actual: str = Field(description="Extracted value as string")
+    n_expected: int = Field(
+        default=1, ge=0, description="Number of gold items this field represents (len for lists)"
+    )
+    n_actual: int = Field(
+        default=1, ge=0, description="Number of extracted items (0 if nothing was extracted)"
+    )
+    n_correct: int = Field(default=0, ge=0, description="Number of correctly extracted items")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_correct_from_match(cls, data: Any) -> Any:
+        # Scalar callers pass only `match`; derive n_correct so precision/recall stay consistent.
+        if isinstance(data, dict) and "n_correct" not in data:
+            data = {**data, "n_correct": 1 if data.get("match") else 0}
+        return data
 
 
 class BenchmarkResult(BaseModel):

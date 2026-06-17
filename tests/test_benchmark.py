@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -21,8 +22,9 @@ from lit_review.benchmark import (
     _compare_numbers,
     _compare_strings,
     _compute_precision_recall,
+    _scalar_score,
 )
-from lit_review.models import FieldScore
+from lit_review.models import FieldScore, PipelineResult
 
 GOLD = SDMRequirements(
     study=StudyMetadata(
@@ -198,6 +200,34 @@ def test_precision_recall_empty():
     assert p == 0.0 and r == 0.0
 
 
+def test_precision_recall_differ_on_partial_list():
+    # Gold has 4 variables, extraction returned 2 (both correct): high precision, low recall.
+    gold = GOLD.model_copy(
+        update={
+            "predictors": EnvironmentalPredictors(variables=["BIO1", "BIO12", "elevation", "NDVI"])
+        }
+    )
+    extracted = GOLD.model_copy(
+        update={"predictors": EnvironmentalPredictors(variables=["BIO1", "BIO12"])}
+    )
+    scores = _compare_fields(gold, extracted)
+    var_score = next(s for s in scores if s.field_path == "predictors.variables")
+    assert (var_score.n_correct, var_score.n_expected, var_score.n_actual) == (2, 4, 2)
+
+    p, r = _compute_precision_recall([var_score])
+    assert p == 1.0  # 2 correct / 2 extracted
+    assert r == 0.5  # 2 correct / 4 gold
+    assert p != r
+
+
+def test_missing_extraction_only_hurts_recall():
+    # Nothing extracted for a scalar gold field: counts against recall, not precision.
+    score = _scalar_score("study.title", "A title", None, match=False)
+    assert score.n_actual == 0 and score.n_expected == 1 and score.n_correct == 0
+    p, r = _compute_precision_recall([score])
+    assert p == 0.0 and r == 0.0
+
+
 # --- Benchmark class ---
 
 
@@ -227,13 +257,14 @@ async def test_run_single(tmp_path):
     paper_id = bench.add_annotation(str(pdf), GOLD)
 
     mock_agent = AsyncMock()
-    mock_agent.extract_from_pdf.return_value = GOLD
+    mock_agent.run_pipeline.return_value = PipelineResult(requirements=GOLD)
 
     result = await bench.run_single(mock_agent, paper_id)
     assert result.paper_id == paper_id
     assert result.precision == 1.0
     assert result.recall == 1.0
     assert all(s.match for s in result.scores)
+    mock_agent.run_pipeline.assert_awaited_once()
 
 
 async def test_run_full(tmp_path):
@@ -243,13 +274,32 @@ async def test_run_full(tmp_path):
     bench.add_annotation(str(pdf), GOLD)
 
     mock_agent = AsyncMock()
-    mock_agent.extract_from_pdf.return_value = GOLD
+    mock_agent.run_pipeline.return_value = PipelineResult(requirements=GOLD)
 
     summary = await bench.run(mock_agent)
     assert len(summary.results) == 1
     assert summary.overall_precision == 1.0
     assert summary.overall_recall == 1.0
     assert len(summary.per_field_accuracy) > 0
+
+
+async def test_run_survives_failing_paper(tmp_path):
+    bench = Benchmark(path=tmp_path / "bench")
+    for _ in range(2):
+        pdf = tmp_path / f"{uuid.uuid4().hex}.pdf"
+        pdf.write_text("fake pdf")
+        bench.add_annotation(str(pdf), GOLD)
+
+    mock_agent = AsyncMock()
+    mock_agent.run_pipeline.side_effect = [
+        RuntimeError("API timeout"),
+        PipelineResult(requirements=GOLD),
+    ]
+
+    summary = await bench.run(mock_agent)
+    # One paper failed; the run still returns the successful result instead of crashing.
+    assert len(summary.results) == 1
+    assert summary.overall_precision == 1.0
 
 
 async def test_run_empty_manifest(tmp_path):

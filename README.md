@@ -42,7 +42,7 @@ from lit_review import SDMExtractionAgent, AgentConfig
 
 async def main():
     config = AgentConfig(
-        model="gpt-4",
+        model="gpt-4o",  # any long-context LiteLLM model, e.g. "anthropic/claude-sonnet-4-6"
         eval_model="anthropic/claude-sonnet-4-6",  # use a different model for verification
     )
     agent = SDMExtractionAgent(config)

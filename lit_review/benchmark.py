@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .models import BenchmarkResult, BenchmarkSummary, FieldScore, SDMRequirements
+from .models import BenchmarkResult, BenchmarkSummary, FieldScore, PipelineResult, SDMRequirements
+
+if TYPE_CHECKING:
+    from .agent import SDMExtractionAgent
 
 FLOAT_TOLERANCE = 0.01
+
+_MISSING = "<missing>"
 
 
 def _str_similarity(a: str, b: str) -> float:
@@ -34,139 +41,150 @@ def _compare_numbers(expected: int | float, actual: int | float) -> bool:
     return abs(float(expected) - float(actual)) <= FLOAT_TOLERANCE
 
 
+def _scalar_score(field_path: str, expected: str, actual: str | None, match: bool) -> FieldScore:
+    """One gold item; n_actual is 0 when nothing was extracted so it only affects recall."""
+    extracted = actual if actual not in (None, "", _MISSING) else None
+    return FieldScore(
+        field_path=field_path,
+        match=match,
+        expected=expected,
+        actual=actual if actual is not None else "",
+        n_expected=1,
+        n_actual=1 if extracted is not None else 0,
+        n_correct=1 if match else 0,
+    )
+
+
+def _list_score(field_path: str, expected: list[str], actual: list[str]) -> FieldScore:
+    matched, n_exp, n_act = _compare_lists(expected, actual)
+    return FieldScore(
+        field_path=field_path,
+        match=matched == n_exp == n_act,
+        expected=str(expected),
+        actual=str(actual),
+        n_expected=n_exp,
+        n_actual=n_act,
+        n_correct=matched,
+    )
+
+
 def _compare_fields(gold: SDMRequirements, extracted: SDMRequirements) -> list[FieldScore]:
     scores: list[FieldScore] = []
 
     if gold.study.title:
         scores.append(
-            FieldScore(
-                field_path="study.title",
-                match=_compare_strings(gold.study.title, extracted.study.title),
-                expected=gold.study.title,
-                actual=extracted.study.title,
+            _scalar_score(
+                "study.title",
+                gold.study.title,
+                extracted.study.title,
+                _compare_strings(gold.study.title, extracted.study.title),
             )
         )
 
     if gold.study.species:
-        matched, total_exp, total_act = _compare_lists(gold.study.species, extracted.study.species)
-        scores.append(
-            FieldScore(
-                field_path="study.species",
-                match=matched == total_exp == total_act,
-                expected=str(gold.study.species),
-                actual=str(extracted.study.species),
-            )
-        )
+        scores.append(_list_score("study.species", gold.study.species, extracted.study.species))
 
     if gold.study.geographic_extent:
         scores.append(
-            FieldScore(
-                field_path="study.geographic_extent",
-                match=_compare_strings(
-                    gold.study.geographic_extent,
-                    extracted.study.geographic_extent or "",
+            _scalar_score(
+                "study.geographic_extent",
+                gold.study.geographic_extent,
+                extracted.study.geographic_extent,
+                _compare_strings(
+                    gold.study.geographic_extent, extracted.study.geographic_extent or ""
                 ),
-                expected=gold.study.geographic_extent,
-                actual=extracted.study.geographic_extent or "",
             )
         )
 
     if gold.occurrence.occurrence_type:
         scores.append(
-            FieldScore(
-                field_path="occurrence.occurrence_type",
-                match=(gold.occurrence.occurrence_type == extracted.occurrence.occurrence_type),
-                expected=gold.occurrence.occurrence_type,
-                actual=extracted.occurrence.occurrence_type or "",
+            _scalar_score(
+                "occurrence.occurrence_type",
+                gold.occurrence.occurrence_type,
+                extracted.occurrence.occurrence_type,
+                gold.occurrence.occurrence_type == extracted.occurrence.occurrence_type,
             )
         )
 
     if gold.occurrence.total_presences is not None:
         scores.append(
-            FieldScore(
-                field_path="occurrence.total_presences",
-                match=_compare_numbers(
-                    gold.occurrence.total_presences,
-                    extracted.occurrence.total_presences or 0,
+            _scalar_score(
+                "occurrence.total_presences",
+                str(gold.occurrence.total_presences),
+                (
+                    None
+                    if extracted.occurrence.total_presences is None
+                    else str(extracted.occurrence.total_presences)
                 ),
-                expected=str(gold.occurrence.total_presences),
-                actual=str(extracted.occurrence.total_presences),
+                _compare_numbers(
+                    gold.occurrence.total_presences, extracted.occurrence.total_presences or 0
+                ),
             )
         )
 
     if gold.occurrence.total_absences is not None:
         scores.append(
-            FieldScore(
-                field_path="occurrence.total_absences",
-                match=_compare_numbers(
-                    gold.occurrence.total_absences,
-                    extracted.occurrence.total_absences or 0,
+            _scalar_score(
+                "occurrence.total_absences",
+                str(gold.occurrence.total_absences),
+                (
+                    None
+                    if extracted.occurrence.total_absences is None
+                    else str(extracted.occurrence.total_absences)
                 ),
-                expected=str(gold.occurrence.total_absences),
-                actual=str(extracted.occurrence.total_absences),
+                _compare_numbers(
+                    gold.occurrence.total_absences, extracted.occurrence.total_absences or 0
+                ),
             )
         )
 
     if gold.predictors.variables:
-        matched, total_exp, total_act = _compare_lists(
-            gold.predictors.variables, extracted.predictors.variables
-        )
         scores.append(
-            FieldScore(
-                field_path="predictors.variables",
-                match=matched == total_exp == total_act,
-                expected=str(gold.predictors.variables),
-                actual=str(extracted.predictors.variables),
+            _list_score(
+                "predictors.variables", gold.predictors.variables, extracted.predictors.variables
             )
         )
 
     if gold.predictors.spatial_resolution:
         scores.append(
-            FieldScore(
-                field_path="predictors.spatial_resolution",
-                match=_compare_strings(
+            _scalar_score(
+                "predictors.spatial_resolution",
+                gold.predictors.spatial_resolution,
+                extracted.predictors.spatial_resolution,
+                _compare_strings(
                     gold.predictors.spatial_resolution,
                     extracted.predictors.spatial_resolution or "",
                 ),
-                expected=gold.predictors.spatial_resolution,
-                actual=extracted.predictors.spatial_resolution or "",
             )
         )
 
     gold_models_by_algo = {m.algorithm.lower(): m for m in gold.models}
     extracted_models_by_algo = {m.algorithm.lower(): m for m in extracted.models}
 
-    for algo_lower, gold_model in gold_models_by_algo.items():
+    for idx, (algo_lower, gold_model) in enumerate(gold_models_by_algo.items()):
         ext_model = extracted_models_by_algo.get(algo_lower)
-        idx = list(gold_models_by_algo.keys()).index(algo_lower)
 
         if ext_model is None:
             scores.append(
-                FieldScore(
-                    field_path=f"models[{idx}].algorithm",
-                    match=False,
-                    expected=gold_model.algorithm,
-                    actual="<missing>",
+                _scalar_score(
+                    f"models[{idx}].algorithm", gold_model.algorithm, _MISSING, match=False
                 )
             )
             continue
 
         scores.append(
-            FieldScore(
-                field_path=f"models[{idx}].algorithm",
-                match=True,
-                expected=gold_model.algorithm,
-                actual=ext_model.algorithm,
+            _scalar_score(
+                f"models[{idx}].algorithm", gold_model.algorithm, ext_model.algorithm, match=True
             )
         )
 
         if gold_model.software:
             scores.append(
-                FieldScore(
-                    field_path=f"models[{idx}].software",
-                    match=_compare_strings(gold_model.software, ext_model.software or ""),
-                    expected=gold_model.software,
-                    actual=ext_model.software or "",
+                _scalar_score(
+                    f"models[{idx}].software",
+                    gold_model.software,
+                    ext_model.software,
+                    _compare_strings(gold_model.software, ext_model.software or ""),
                 )
             )
 
@@ -175,61 +193,42 @@ def _compare_fields(gold: SDMRequirements, extracted: SDMRequirements) -> list[F
 
         for metric_upper, gold_pm in gold_perf_by_metric.items():
             ext_pm = ext_perf_by_metric.get(metric_upper)
-            if ext_pm is None:
-                scores.append(
-                    FieldScore(
-                        field_path=f"models[{idx}].performance.{gold_pm.metric}",
-                        match=False,
-                        expected=str(gold_pm.value),
-                        actual="<missing>",
-                    )
+            scores.append(
+                _scalar_score(
+                    f"models[{idx}].performance.{gold_pm.metric}",
+                    str(gold_pm.value),
+                    _MISSING if ext_pm is None else str(ext_pm.value),
+                    match=ext_pm is not None and _compare_numbers(gold_pm.value, ext_pm.value),
                 )
-            else:
-                scores.append(
-                    FieldScore(
-                        field_path=f"models[{idx}].performance.{gold_pm.metric}",
-                        match=_compare_numbers(gold_pm.value, ext_pm.value),
-                        expected=str(gold_pm.value),
-                        actual=str(ext_pm.value),
-                    )
-                )
+            )
 
     if gold.evaluation.cv_strategy:
         scores.append(
-            FieldScore(
-                field_path="evaluation.cv_strategy",
-                match=_compare_strings(
-                    gold.evaluation.cv_strategy,
-                    extracted.evaluation.cv_strategy or "",
+            _scalar_score(
+                "evaluation.cv_strategy",
+                gold.evaluation.cv_strategy,
+                extracted.evaluation.cv_strategy,
+                _compare_strings(
+                    gold.evaluation.cv_strategy, extracted.evaluation.cv_strategy or ""
                 ),
-                expected=gold.evaluation.cv_strategy,
-                actual=extracted.evaluation.cv_strategy or "",
             )
         )
 
     if gold.evaluation.metrics_used:
-        matched, total_exp, total_act = _compare_lists(
-            gold.evaluation.metrics_used, extracted.evaluation.metrics_used
-        )
         scores.append(
-            FieldScore(
-                field_path="evaluation.metrics_used",
-                match=matched == total_exp == total_act,
-                expected=str(gold.evaluation.metrics_used),
-                actual=str(extracted.evaluation.metrics_used),
+            _list_score(
+                "evaluation.metrics_used",
+                gold.evaluation.metrics_used,
+                extracted.evaluation.metrics_used,
             )
         )
 
     if gold.results.key_predictors:
-        matched, total_exp, total_act = _compare_lists(
-            gold.results.key_predictors, extracted.results.key_predictors
-        )
         scores.append(
-            FieldScore(
-                field_path="results.key_predictors",
-                match=matched == total_exp == total_act,
-                expected=str(gold.results.key_predictors),
-                actual=str(extracted.results.key_predictors),
+            _list_score(
+                "results.key_predictors",
+                gold.results.key_predictors,
+                extracted.results.key_predictors,
             )
         )
 
@@ -239,11 +238,11 @@ def _compare_fields(gold: SDMRequirements, extracted: SDMRequirements) -> list[F
 def _compute_precision_recall(
     scores: list[FieldScore],
 ) -> tuple[float, float]:
-    if not scores:
-        return 0.0, 0.0
-    matched = sum(1 for s in scores if s.match)
-    precision = matched / len(scores) if scores else 0.0
-    recall = matched / len(scores) if scores else 0.0
+    total_correct = sum(s.n_correct for s in scores)
+    total_actual = sum(s.n_actual for s in scores)
+    total_expected = sum(s.n_expected for s in scores)
+    precision = total_correct / total_actual if total_actual else 0.0
+    recall = total_correct / total_expected if total_expected else 0.0
     return precision, recall
 
 
@@ -292,7 +291,7 @@ class Benchmark:
     def list_annotations(self) -> list[dict]:
         return self._load_manifest()
 
-    async def run_single(self, agent: object, paper_id: str) -> BenchmarkResult:
+    async def run_single(self, agent: SDMExtractionAgent, paper_id: str) -> BenchmarkResult:
         manifest = self._load_manifest()
         entry = next((e for e in manifest if e["id"] == paper_id), None)
         if entry is None:
@@ -300,7 +299,11 @@ class Benchmark:
 
         gold = SDMRequirements.model_validate_json(Path(entry["annotation_path"]).read_text())
 
-        extracted = await agent.extract_from_pdf(entry["pdf_path"])  # type: ignore[attr-defined]
+        # Benchmark the shipped pipeline (section-aware extraction + validation/retry), not the
+        # raw single-shot path. Skip evaluation since it costs an extra call without changing
+        # the requirements that get scored.
+        result: PipelineResult = await agent.run_pipeline(entry["pdf_path"], run_evaluation=False)
+        extracted = result.requirements
 
         scores = _compare_fields(gold, extracted)
         precision, recall = _compute_precision_recall(scores)
@@ -312,21 +315,26 @@ class Benchmark:
             recall=recall,
         )
 
-    async def run(self, agent: object) -> BenchmarkSummary:
+    async def run(self, agent: SDMExtractionAgent) -> BenchmarkSummary:
         manifest = self._load_manifest()
         if not manifest:
             return BenchmarkSummary()
 
-        results: list[BenchmarkResult] = []
-        for entry in manifest:
-            result = await self.run_single(agent, entry["id"])
-            results.append(result)
+        # Score papers concurrently; a failure on one paper must not abort the whole run.
+        outcomes = await asyncio.gather(
+            *(self.run_single(agent, entry["id"]) for entry in manifest),
+            return_exceptions=True,
+        )
+        results = [r for r in outcomes if isinstance(r, BenchmarkResult)]
+        if not results:
+            return BenchmarkSummary()
 
-        total_matched = sum(sum(1 for s in r.scores if s.match) for r in results)
-        total_fields = sum(len(r.scores) for r in results)
+        total_correct = sum(s.n_correct for r in results for s in r.scores)
+        total_actual = sum(s.n_actual for r in results for s in r.scores)
+        total_expected = sum(s.n_expected for r in results for s in r.scores)
 
-        overall_precision = total_matched / total_fields if total_fields else 0.0
-        overall_recall = total_matched / total_fields if total_fields else 0.0
+        overall_precision = total_correct / total_actual if total_actual else 0.0
+        overall_recall = total_correct / total_expected if total_expected else 0.0
 
         field_hits: dict[str, list[bool]] = {}
         for r in results:

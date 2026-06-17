@@ -99,7 +99,8 @@ def get_text_for_field(sections: PaperSections, field: str) -> str:
     if field not in SECTION_MAP:
         return sections.raw_text
     primary, fallback = SECTION_MAP[field]
-    text = sections.get_sections(*primary)
-    if text == sections.raw_text and fallback != primary:
-        text = sections.get_sections(*fallback)
-    return text
+    if any(name in sections.sections for name in primary):
+        return sections.get_sections(*primary)
+    if fallback != primary and any(name in sections.sections for name in fallback):
+        return sections.get_sections(*fallback)
+    return sections.raw_text

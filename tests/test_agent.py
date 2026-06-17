@@ -318,9 +318,9 @@ async def test_evaluate_calls_llm_with_eval_prompt(mock_instructor, mock_extract
 
     call_args = mock_create.call_args
     assert call_args.kwargs["response_model"] is ExtractionEval
-    assert call_args.kwargs["model"] == "gpt-4"
+    assert call_args.kwargs["model"] == "gpt-4o"
     user_msg = call_args.kwargs["messages"][1]["content"]
-    assert call_args.kwargs["model"] == "gpt-4"
+    assert call_args.kwargs["model"] == "gpt-4o"
     assert EVAL_EXTRACTION_PREFIX in user_msg
     assert FAKE_TEXT in user_msg
 

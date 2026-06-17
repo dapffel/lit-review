@@ -7,7 +7,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 class VectorMemory:
     def __init__(
         self,
-        model: str = "text-embedding-ada-002",
+        model: str = "text-embedding-3-small",
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
     ):
