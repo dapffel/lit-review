@@ -6,7 +6,14 @@ from pydantic import BaseModel, Field, computed_field
 
 
 class AgentConfig(BaseModel):
-    model: str = "gpt-4"
+    model: str = Field(
+        default="gpt-4o",
+        description=(
+            "LiteLLM model string for extraction. Defaults to a long-context model so the "
+            "max_input_chars budget fits. Any provider works, e.g. "
+            "'anthropic/claude-sonnet-4-6', 'gemini/gemini-1.5-pro'."
+        ),
+    )
     eval_model: str | None = Field(
         default=None,
         description=(
@@ -14,7 +21,7 @@ class AgentConfig(BaseModel):
             "Defaults to the extraction model when not set."
         ),
     )
-    embedding_model: str = "text-embedding-ada-002"
+    embedding_model: str = "text-embedding-3-small"
     temperature: float = Field(default=0.2, ge=0, le=1)
     max_reference_docs: int = Field(default=10, gt=0)
     chunk_size: int = Field(default=1000, gt=0)
