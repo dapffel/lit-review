@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -461,6 +461,21 @@ class FieldScore(BaseModel):
     match: bool = Field(description="Whether extracted value matches gold standard")
     expected: str = Field(description="Gold-standard value as string")
     actual: str = Field(description="Extracted value as string")
+    n_expected: int = Field(
+        default=1, ge=0, description="Number of gold items this field represents (len for lists)"
+    )
+    n_actual: int = Field(
+        default=1, ge=0, description="Number of extracted items (0 if nothing was extracted)"
+    )
+    n_correct: int = Field(default=0, ge=0, description="Number of correctly extracted items")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_correct_from_match(cls, data: Any) -> Any:
+        # Scalar callers pass only `match`; derive n_correct so precision/recall stay consistent.
+        if isinstance(data, dict) and "n_correct" not in data:
+            data = {**data, "n_correct": 1 if data.get("match") else 0}
+        return data
 
 
 class BenchmarkResult(BaseModel):
