@@ -140,54 +140,63 @@ def _score_evidence(evidence: str | None) -> tuple[ConfidenceLevel, str]:
     return "high", "Substantive evidence provided"
 
 
-def score_confidence(requirements: SDMRequirements) -> ConfidenceReport:
-    scores: list[FieldConfidence] = []
+def _evidence_confidence(
+    field_path: str, evidence: str | None, *, missing: bool = False, missing_reason: str = ""
+) -> FieldConfidence:
+    """Score a field from its evidence, but drop straight to 'low' when a required value is absent."""
     conf: ConfidenceLevel
     reason: str
-
-    conf, reason = _score_evidence(requirements.study.evidence)
-    if not requirements.study.species:
-        conf, reason = "low", "No species extracted"
-    scores.append(FieldConfidence(field_path="study", confidence=conf, reason=reason))
-
-    conf, reason = _score_evidence(requirements.occurrence.evidence)
-    if requirements.occurrence.total_presences is None:
-        conf, reason = "low", "No presence count extracted"
-    scores.append(FieldConfidence(field_path="occurrence", confidence=conf, reason=reason))
-
-    conf, reason = _score_evidence(requirements.predictors.evidence)
-    if not requirements.predictors.variables:
-        conf, reason = "low", "No predictor variables extracted"
-    scores.append(FieldConfidence(field_path="predictors", confidence=conf, reason=reason))
-
-    if not requirements.models:
-        scores.append(
-            FieldConfidence(field_path="models", confidence="low", reason="No models extracted")
-        )
+    if missing:
+        conf, reason = "low", missing_reason
     else:
-        has_perf = any(m.performance for m in requirements.models)
-        if has_perf:
-            scores.append(
-                FieldConfidence(
-                    field_path="models", confidence="high", reason="Models with performance metrics"
-                )
-            )
-        else:
-            scores.append(
-                FieldConfidence(
-                    field_path="models",
-                    confidence="medium",
-                    reason="Models extracted but no performance metrics",
-                )
-            )
+        conf, reason = _score_evidence(evidence)
+    return FieldConfidence(field_path=field_path, confidence=conf, reason=reason)
 
-    conf, reason = _score_evidence(requirements.evaluation.evidence)
-    scores.append(FieldConfidence(field_path="evaluation", confidence=conf, reason=reason))
 
-    conf, reason = _score_evidence(requirements.results.evidence)
-    if not requirements.results.key_predictors:
-        conf, reason = "low", "No key predictors identified"
-    scores.append(FieldConfidence(field_path="results", confidence=conf, reason=reason))
+def _models_confidence(models: list[SDMModelSpec]) -> FieldConfidence:
+    if not models:
+        return FieldConfidence(field_path="models", confidence="low", reason="No models extracted")
+    if any(m.performance for m in models):
+        return FieldConfidence(
+            field_path="models", confidence="high", reason="Models with performance metrics"
+        )
+    return FieldConfidence(
+        field_path="models",
+        confidence="medium",
+        reason="Models extracted but no performance metrics",
+    )
+
+
+def score_confidence(requirements: SDMRequirements) -> ConfidenceReport:
+    r = requirements
+    scores = [
+        _evidence_confidence(
+            "study",
+            r.study.evidence,
+            missing=not r.study.species,
+            missing_reason="No species extracted",
+        ),
+        _evidence_confidence(
+            "occurrence",
+            r.occurrence.evidence,
+            missing=r.occurrence.total_presences is None,
+            missing_reason="No presence count extracted",
+        ),
+        _evidence_confidence(
+            "predictors",
+            r.predictors.evidence,
+            missing=not r.predictors.variables,
+            missing_reason="No predictor variables extracted",
+        ),
+        _models_confidence(r.models),
+        _evidence_confidence("evaluation", r.evaluation.evidence),
+        _evidence_confidence(
+            "results",
+            r.results.evidence,
+            missing=not r.results.key_predictors,
+            missing_reason="No key predictors identified",
+        ),
+    ]
 
     return ConfidenceReport(field_scores=scores)
 
