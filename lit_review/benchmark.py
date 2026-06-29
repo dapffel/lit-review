@@ -329,12 +329,8 @@ class Benchmark:
         if not results:
             return BenchmarkSummary()
 
-        total_correct = sum(s.n_correct for r in results for s in r.scores)
-        total_actual = sum(s.n_actual for r in results for s in r.scores)
-        total_expected = sum(s.n_expected for r in results for s in r.scores)
-
-        overall_precision = total_correct / total_actual if total_actual else 0.0
-        overall_recall = total_correct / total_expected if total_expected else 0.0
+        all_scores = [s for r in results for s in r.scores]
+        overall_precision, overall_recall = _compute_precision_recall(all_scores)
 
         field_hits: dict[str, list[bool]] = {}
         for r in results:
