@@ -251,6 +251,19 @@ class SDMExtractionAgent:
         self.config = config or AgentConfig()
         self.client = instructor.from_litellm(litellm.acompletion)
 
+    async def _retrieve_context(self, text: str, references: list[str] | None) -> str:
+        """Embed reference papers and return the chunks most relevant to ``text``."""
+        if not references:
+            return ""
+        memory = VectorMemory(
+            model=self.config.embedding_model,
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
+        )
+        await memory.add(references[: self.config.max_reference_docs])
+        context_chunks = await memory.query(_retrieval_query(text))
+        return "\n\n".join(context_chunks)
+
     async def extract_from_pdf(
         self, pdf_path: str, references: list[str] | None = None
     ) -> SDMRequirements:
@@ -258,16 +271,7 @@ class SDMExtractionAgent:
         if not text:
             raise ValueError("PDF contains no extractable text")
 
-        context = ""
-        if references:
-            memory = VectorMemory(
-                model=self.config.embedding_model,
-                chunk_size=self.config.chunk_size,
-                chunk_overlap=self.config.chunk_overlap,
-            )
-            await memory.add(references[: self.config.max_reference_docs])
-            context_chunks = await memory.query(_retrieval_query(text))
-            context = "\n\n".join(context_chunks)
+        context = await self._retrieve_context(text, references)
 
         user_content = _build_extraction_content(text, context, self.config.max_input_chars)
 
@@ -373,16 +377,7 @@ class SDMExtractionAgent:
 
         sections = parse_sections(text)
 
-        context = ""
-        if references:
-            memory = VectorMemory(
-                model=self.config.embedding_model,
-                chunk_size=self.config.chunk_size,
-                chunk_overlap=self.config.chunk_overlap,
-            )
-            await memory.add(references[: self.config.max_reference_docs])
-            context_chunks = await memory.query(_retrieval_query(text))
-            context = "\n\n".join(context_chunks)
+        context = await self._retrieve_context(text, references)
 
         has_key_sections = "methods" in sections.sections or "results" in sections.sections
         if has_key_sections:
