@@ -1,10 +1,11 @@
 import asyncio
 import json
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 import instructor
 import litellm
 from dotenv import load_dotenv
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .memory import VectorMemory
@@ -52,6 +53,27 @@ EVIDENCE_HIGH_THRESHOLD = 80
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 Grade = Literal["pass", "marginal", "fail"]
+
+
+class _PipelineState(TypedDict, total=False):
+    """Mutable state threaded through the run_pipeline LangGraph."""
+
+    # Inputs / configuration
+    pdf_path: str
+    references: list[str] | None
+    run_validation: bool
+    run_evaluation: bool
+    retries_remaining: int
+    # Derived during the run
+    text: str
+    sections: PaperSections
+    context: str
+    requirements: SDMRequirements
+    confidence: ConfidenceReport
+    validation: ValidationReport | None
+    evaluation: ExtractionEval | None
+    quality: QualityScore
+    retries_performed: int
 
 
 class _ModelsRetry(BaseModel):
@@ -260,6 +282,7 @@ class SDMExtractionAgent:
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig()
         self.client = instructor.from_litellm(litellm.acompletion)
+        self._pipeline = self._build_pipeline_graph()
 
     async def _retrieve_context(self, text: str, references: list[str] | None) -> str:
         """Embed reference papers and return the chunks most relevant to ``text``."""
@@ -371,32 +394,54 @@ class SDMExtractionAgent:
             return "models", corrected.models
         return section_name, corrected
 
-    @trace_async("SDMExtractionAgent.run_pipeline")
-    async def run_pipeline(
-        self,
-        pdf_path: str,
-        references: list[str] | None = None,
-        *,
-        run_validation: bool = True,
-        run_evaluation: bool = True,
-        retry_on_errors: bool = True,
-        max_retries: int = 1,
-    ) -> PipelineResult:
-        text = extract_text(pdf_path).strip()
+    # ------------------------------------------------------------------
+    # Pipeline graph (LangGraph StateGraph)
+    # ------------------------------------------------------------------
+
+    def _build_pipeline_graph(self) -> Any:
+        """Compile the run_pipeline flow as a stateful graph with a retry loop.
+
+        prepare → extract → validate → (critical errors & retries left? → retry ↺)
+                                     → evaluate → quality → END
+        """
+        graph = StateGraph(_PipelineState)
+        graph.add_node("prepare", self._prepare_node)
+        graph.add_node("extract", self._extract_node)
+        graph.add_node("validate", self._validate_node)
+        graph.add_node("retry", self._retry_node)
+        graph.add_node("evaluate", self._evaluate_node)
+        graph.add_node("quality", self._quality_node)
+
+        graph.add_edge(START, "prepare")
+        graph.add_edge("prepare", "extract")
+        graph.add_edge("extract", "validate")
+        graph.add_conditional_edges(
+            "validate", self._should_retry, {"retry": "retry", "evaluate": "evaluate"}
+        )
+        graph.add_conditional_edges(
+            "retry", self._should_retry, {"retry": "retry", "evaluate": "evaluate"}
+        )
+        graph.add_edge("evaluate", "quality")
+        graph.add_edge("quality", END)
+        return graph.compile()
+
+    async def _prepare_node(self, state: _PipelineState) -> dict[str, Any]:
+        text = extract_text(state["pdf_path"]).strip()
         if not text:
             raise ValueError("PDF contains no extractable text")
-
         sections = parse_sections(text)
+        context = await self._retrieve_context(text, state.get("references"))
+        return {"text": text, "sections": sections, "context": context}
 
-        context = await self._retrieve_context(text, references)
-
+    async def _extract_node(self, state: _PipelineState) -> dict[str, Any]:
+        sections = state["sections"]
         has_key_sections = "methods" in sections.sections or "results" in sections.sections
         if has_key_sections:
             extraction_text = sections.get_sections("abstract", "methods", "results")
         else:
             extraction_text = sections.raw_text
         user_content = _build_extraction_content(
-            extraction_text, context, self.config.max_input_chars
+            extraction_text, state["context"], self.config.max_input_chars
         )
 
         requirements = await self.client.create(
@@ -409,56 +454,90 @@ class SDMExtractionAgent:
             temperature=self.config.temperature,
             max_retries=self.config.request_retries,
         )
+        return {"requirements": requirements, "confidence": score_confidence(requirements)}
 
-        confidence = score_confidence(requirements)
+    def _validate_node(self, state: _PipelineState) -> dict[str, Any]:
+        if not state.get("run_validation", True):
+            return {"validation": None}
+        return {"validation": validate(state["requirements"])}
 
-        validation: ValidationReport | None = None
-        retries_performed = 0
+    def _should_retry(self, state: _PipelineState) -> str:
+        validation = state.get("validation")
+        if validation is not None and state.get("retries_remaining", 0) > 0:
+            if get_critical_errors(validation):
+                return "retry"
+        return "evaluate"
 
-        if run_validation:
-            validation = validate(requirements)
+    async def _retry_node(self, state: _PipelineState) -> dict[str, Any]:
+        requirements = state["requirements"]
+        sections = state["sections"]
+        validation = state["validation"]
+        assert validation is not None  # guaranteed by _should_retry
 
-            if retry_on_errors and max_retries > 0:
-                for _ in range(max_retries):
-                    critical = get_critical_errors(validation)
-                    if not critical:
-                        break
-                    by_section = violations_by_section(
-                        ValidationReport(
-                            violations=critical,
-                            num_errors=len(critical),
-                            num_warnings=0,
-                        )
-                    )
-                    # Errored sections are disjoint, so re-extract them concurrently and merge
-                    # the corrections in one pass.
-                    updates = await asyncio.gather(
-                        *(
-                            self._retry_section(requirements, sec_name, sec_violations, sections)
-                            for sec_name, sec_violations in by_section.items()
-                        )
-                    )
-                    merged = {attr: value for u in updates if u is not None for attr, value in [u]}
-                    if merged:
-                        requirements = requirements.model_copy(update=merged)
-                    retries_performed += 1
-                    validation = validate(requirements)
-                    confidence = score_confidence(requirements)
+        critical = get_critical_errors(validation)
+        by_section = violations_by_section(
+            ValidationReport(violations=critical, num_errors=len(critical), num_warnings=0)
+        )
+        # Errored sections are disjoint, so re-extract them concurrently and merge in one pass.
+        updates = await asyncio.gather(
+            *(
+                self._retry_section(requirements, sec_name, sec_violations, sections)
+                for sec_name, sec_violations in by_section.items()
+            )
+        )
+        merged = {attr: value for u in updates if u is not None for attr, value in [u]}
+        if merged:
+            requirements = requirements.model_copy(update=merged)
 
-        evaluation: ExtractionEval | None = None
-        if run_evaluation:
-            evaluation = await self.evaluate(requirements, sections=sections)
+        return {
+            "requirements": requirements,
+            "validation": validate(requirements),
+            "confidence": score_confidence(requirements),
+            "retries_performed": state.get("retries_performed", 0) + 1,
+            "retries_remaining": state.get("retries_remaining", 0) - 1,
+        }
 
-        quality = compute_quality(validation, evaluation, confidence)
+    async def _evaluate_node(self, state: _PipelineState) -> dict[str, Any]:
+        if not state.get("run_evaluation", True):
+            return {"evaluation": None}
+        evaluation = await self.evaluate(state["requirements"], sections=state["sections"])
+        return {"evaluation": evaluation}
 
+    def _quality_node(self, state: _PipelineState) -> dict[str, Any]:
+        quality = compute_quality(
+            state.get("validation"), state.get("evaluation"), state.get("confidence")
+        )
+        return {"quality": quality}
+
+    @trace_async("SDMExtractionAgent.run_pipeline")
+    async def run_pipeline(
+        self,
+        pdf_path: str,
+        references: list[str] | None = None,
+        *,
+        run_validation: bool = True,
+        run_evaluation: bool = True,
+        retry_on_errors: bool = True,
+        max_retries: int = 1,
+    ) -> PipelineResult:
+        initial: _PipelineState = {
+            "pdf_path": pdf_path,
+            "references": references,
+            "run_validation": run_validation,
+            "run_evaluation": run_evaluation,
+            "retries_remaining": max_retries if (run_validation and retry_on_errors) else 0,
+            "retries_performed": 0,
+        }
+        final = await self._pipeline.ainvoke(initial)
+        sections: PaperSections = final["sections"]
         return PipelineResult(
-            requirements=requirements,
+            requirements=final["requirements"],
             sections_used=list(sections.sections.keys()),
-            confidence=confidence,
-            validation=validation,
-            evaluation=evaluation,
-            quality=quality,
-            retries_performed=retries_performed,
+            confidence=final.get("confidence"),
+            validation=final.get("validation"),
+            evaluation=final.get("evaluation"),
+            quality=final.get("quality"),
+            retries_performed=final.get("retries_performed", 0),
         )
 
     async def __aenter__(self):

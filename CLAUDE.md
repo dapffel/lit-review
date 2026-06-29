@@ -29,6 +29,8 @@ Single agent that extracts species distribution modeling (SDM) requirements from
 
 ### Pipeline flow (`run_pipeline`)
 
+`run_pipeline` is implemented as a **LangGraph `StateGraph`** (`prepare → extract → validate → [retry loop] → evaluate → quality`); the retry loop is a conditional edge that re-runs while critical validation errors remain and retries are left. The steps it performs:
+
 1. Extract PDF text via PyMuPDF
 2. Parse into sections (Abstract, Methods, Results, etc.) via regex heuristics
 3. Optionally retrieve context from reference SDM papers via vector memory
@@ -41,7 +43,7 @@ Single agent that extracts species distribution modeling (SDM) requirements from
 
 ### Modules
 
-- **`agent.py`** — `SDMExtractionAgent` with two entry points: `extract_from_pdf()` for simple extraction, `run_pipeline()` for the full flow returning `PipelineResult`. Also contains `score_confidence()` and `compute_quality()`.
+- **`agent.py`** — `SDMExtractionAgent` with two entry points: `extract_from_pdf()` for simple extraction, `run_pipeline()` for the full flow returning `PipelineResult`. `run_pipeline()` is orchestrated by a LangGraph `StateGraph` (nodes `_prepare_node`/`_extract_node`/`_validate_node`/`_retry_node`/`_evaluate_node`/`_quality_node`, threaded through the `_PipelineState` TypedDict). Also contains `score_confidence()` and `compute_quality()`.
 - **`models.py`** — Pydantic v2 models: `AgentConfig` (with separate `model` and `eval_model`), `PaperSections`, nested `SDMRequirements` with typed fields, `ExtractionEval` (counts are `@computed_field`), `FieldConfidence`/`ConfidenceReport`, `QualityScore`/`PipelineResult`, `ValidationReport`, benchmark models.
 - **`sections.py`** — `parse_sections()` splits PDF text by detected headings. `SECTION_MAP` maps extraction fields to relevant paper sections. `get_text_for_field()` retrieves targeted text.
 - **`prompts.py`** — All prompt text for extraction, evaluation, and retry, separated from pipeline logic.
