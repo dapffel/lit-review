@@ -39,6 +39,7 @@ from .prompts import (
     RETRY_VIOLATIONS_PREFIX,
 )
 from .sections import SECTION_MAP, get_text_for_field, parse_sections
+from .tracing import trace_async
 from .validators import get_critical_errors, validate, violations_by_section
 
 load_dotenv()
@@ -370,6 +371,7 @@ class SDMExtractionAgent:
             return "models", corrected.models
         return section_name, corrected
 
+    @trace_async("SDMExtractionAgent.run_pipeline")
     async def run_pipeline(
         self,
         pdf_path: str,

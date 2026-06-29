@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tracing = ["langsmith>=0.1.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -40,5 +41,5 @@ profile = "black"
 line_length = 100
 
 [[tool.mypy.overrides]]
-module = ["fitz", "faiss"]
+module = ["fitz", "faiss", "langsmith"]
 ignore_missing_imports = true

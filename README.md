@@ -30,6 +30,19 @@ OPENAI_API_KEY=sk-...
 
 Any LiteLLM-supported provider works — just set the relevant key (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc).
 
+### Optional: LangSmith tracing
+
+`run_pipeline()` is traced with [LangSmith](https://smith.langchain.com/) when enabled. Install the extra and set a key — tracing is a no-op otherwise (no dependency required):
+
+```bash
+pip install ".[tracing]"
+```
+
+```
+LANGSMITH_API_KEY=ls-...
+# LANGSMITH_TRACING=false   # set to disable even when a key is present
+```
+
 ## Usage
 
 ### Full pipeline (recommended)
