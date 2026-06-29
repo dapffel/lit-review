@@ -4,7 +4,7 @@ import csv
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -93,13 +93,11 @@ def _flatten(value: Any, path: str) -> list[tuple[str, Any]]:
 
 def _validation_for_field(
     report: ValidationReport | None, field_path: str
-) -> tuple[str, str | None]:
+) -> tuple[Literal["ok", "warning", "error", "not_run"], str | None]:
     if report is None:
         return "not_run", None
 
-    related = [
-        v for v in report.violations if _violation_matches_field(v.field_path, field_path)
-    ]
+    related = [v for v in report.violations if _violation_matches_field(v.field_path, field_path)]
     if not related:
         return "ok", None
 
@@ -110,7 +108,7 @@ def _validation_for_field(
 
 def _eval_for_field(
     verifications: list[FieldVerification] | None, field_path: str
-) -> tuple[str, str | None]:
+) -> tuple[Literal["verified", "inaccurate", "unverifiable", "not_run"], str | None]:
     if verifications is None:
         return "not_run", None
 

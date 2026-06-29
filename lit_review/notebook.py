@@ -67,17 +67,15 @@ def configure_pipeline_demo(
     config = AgentConfig(model=model, eval_model=eval_model, temperature=temperature)
     agent = SDMExtractionAgent(config)
 
+    async def run_pipeline(pdf_path: str) -> PipelineResult:
+        return await agent.run_pipeline(pdf_path)
+
     if langsmith_enabled:
         from langsmith import traceable
 
-        @traceable(name="SDMExtractionAgent.run_pipeline", run_type="chain")
-        async def run_pipeline(pdf_path: str) -> PipelineResult:
-            return await agent.run_pipeline(pdf_path)
-
-    else:
-
-        async def run_pipeline(pdf_path: str) -> PipelineResult:
-            return await agent.run_pipeline(pdf_path)
+        run_pipeline = traceable(name="SDMExtractionAgent.run_pipeline", run_type="chain")(
+            run_pipeline
+        )
 
     return NotebookDemo(
         config=config,
