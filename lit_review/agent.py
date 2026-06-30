@@ -18,7 +18,9 @@ from .models import (
     FieldConfidence,
     OccurrenceData,
     PaperSections,
+    PipelineFlow,
     PipelineResult,
+    PipelineStep,
     QualityScore,
     SDMModelSpec,
     SDMRequirements,
@@ -278,11 +280,93 @@ def compute_quality(
     return QualityScore(score=score, grade=grade, reasons=reasons)
 
 
+# Human-readable description of each pipeline node, in execution order. This is the one
+# place the prose lives; the node *set* is reconciled against the compiled graph below so
+# the two can never silently drift. `enabled_by` names the run_pipeline flag(s) that must
+# all be true for the step to run (None = always runs).
+_PIPELINE_STEPS: tuple[PipelineStep, ...] = (
+    PipelineStep(
+        name="prepare",
+        purpose="Extract PDF text, parse paper sections, and retrieve optional context.",
+        inputs=["pdf_path", "references"],
+        outputs=["text", "sections", "context"],
+    ),
+    PipelineStep(
+        name="extract",
+        purpose="Ask the LLM for validated SDMRequirements from targeted paper text.",
+        inputs=["sections", "context"],
+        outputs=["requirements", "confidence"],
+    ),
+    PipelineStep(
+        name="validate",
+        purpose="Run deterministic checks for impossible counts, metrics, and links.",
+        inputs=["requirements"],
+        outputs=["validation"],
+        optional=True,
+    ),
+    PipelineStep(
+        name="retry",
+        purpose="Re-extract only sections with critical validation errors (conditional, may loop).",
+        inputs=["requirements", "validation", "sections"],
+        outputs=["requirements", "validation", "confidence"],
+        optional=True,
+    ),
+    PipelineStep(
+        name="evaluate",
+        purpose="Use an evaluator model to verify extracted fields against the paper.",
+        inputs=["requirements", "sections"],
+        outputs=["evaluation"],
+        optional=True,
+    ),
+    PipelineStep(
+        name="quality",
+        purpose="Combine validation, evaluation, and confidence into one quality score.",
+        inputs=["validation", "evaluation", "confidence"],
+        outputs=["quality"],
+    ),
+)
+
+
 class SDMExtractionAgent:
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig()
         self.client = instructor.from_litellm(litellm.acompletion)
         self._pipeline = self._build_pipeline_graph()
+
+    def describe_flow(
+        self,
+        *,
+        run_validation: bool = True,
+        run_evaluation: bool = True,
+        retry_on_errors: bool = True,
+    ) -> PipelineFlow:
+        """Public, LLM-free view of the steps run_pipeline would run for the given flags.
+
+        Reconciles the authored steps against the compiled graph and fails fast on drift,
+        so this description can't quietly fall out of sync with _build_pipeline_graph.
+        """
+        self._assert_steps_match_graph()
+        # Each optional step is gated by the same flags run_pipeline uses.
+        runs = {
+            "validate": run_validation,
+            "retry": run_validation and retry_on_errors,
+            "evaluate": run_evaluation,
+        }
+        steps = [s for s in _PIPELINE_STEPS if runs.get(s.name, True)]
+        return PipelineFlow(steps=steps)
+
+    def _graph_node_names(self) -> set[str]:
+        """Structural source of truth: the nodes the compiled graph actually contains."""
+        return {n for n in self._pipeline.get_graph().nodes if not n.startswith("__")}
+
+    def _assert_steps_match_graph(self) -> None:
+        described = {s.name for s in _PIPELINE_STEPS}
+        graph_nodes = self._graph_node_names()
+        if described != graph_nodes:
+            raise RuntimeError(
+                "describe_flow is out of sync with the pipeline graph: "
+                f"described-only={described - graph_nodes}, graph-only={graph_nodes - described}"
+            )
 
     async def _retrieve_context(self, text: str, references: list[str] | None) -> str:
         """Embed reference papers and return the chunks most relevant to ``text``."""

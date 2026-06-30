@@ -12,6 +12,7 @@ from lit_review import (
     OccurrenceData,
     PaperSections,
     PerformanceMetric,
+    PipelineFlow,
     PipelineResult,
     ProjectedScenario,
     QualityScore,
@@ -606,6 +607,57 @@ async def test_evaluate_requires_pdf_or_sections():
     agent = SDMExtractionAgent()
     with pytest.raises(ValueError, match="Either pdf_path or sections"):
         await agent.evaluate(FAKE_REQUIREMENTS)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline flow description
+# ---------------------------------------------------------------------------
+
+
+def test_describe_flow_defaults():
+    agent = SDMExtractionAgent()
+    flow = agent.describe_flow()
+
+    assert isinstance(flow, PipelineFlow)
+    assert (
+        flow.as_text_diagram() == "prepare -> extract -> validate -> retry -> evaluate -> quality"
+    )
+    assert [step.name for step in flow.steps] == [
+        "prepare",
+        "extract",
+        "validate",
+        "retry",
+        "evaluate",
+        "quality",
+    ]
+    assert flow.steps[0].inputs == ["pdf_path", "references"]
+    assert flow.steps[-1].outputs == ["quality"]
+
+
+def test_describe_flow_respects_disabled_steps():
+    agent = SDMExtractionAgent()
+    flow = agent.describe_flow(
+        run_validation=False,
+        run_evaluation=False,
+        retry_on_errors=True,
+    )
+
+    assert flow.as_text_diagram() == "prepare -> extract -> quality"
+
+
+def test_describe_flow_matches_graph_nodes():
+    # The described steps must equal the compiled graph's real nodes, so describe_flow
+    # can't drift from _build_pipeline_graph. Names come straight from the graph.
+    agent = SDMExtractionAgent()
+    described = {step.name for step in agent.describe_flow().steps}
+    assert described == agent._graph_node_names()
+
+
+def test_describe_flow_detects_drift(monkeypatch):
+    agent = SDMExtractionAgent()
+    monkeypatch.setattr(agent, "_graph_node_names", lambda: {"prepare", "extract"})
+    with pytest.raises(RuntimeError, match="out of sync"):
+        agent.describe_flow()
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,34 @@ async def main():
 asyncio.run(main())
 ```
 
+### Pipeline flow
+
+The repository is intentionally small:
+
+- `lit_review/agent.py` orchestrates the PDF-to-`PipelineResult` flow.
+- `lit_review/models.py` defines all Pydantic request, extraction, validation, and result models.
+- `lit_review/prompts.py` keeps prompt text out of orchestration code.
+- `lit_review/pdf.py`, `sections.py`, `memory.py`, and `validators.py` provide focused helpers.
+
+The default flow is:
+
+```text
+prepare -> extract -> validate -> retry -> evaluate -> quality
+```
+
+You can inspect the active flow without running an LLM call:
+
+```python
+from lit_review import SDMExtractionAgent
+
+agent = SDMExtractionAgent()
+flow = agent.describe_flow(run_evaluation=False)
+print(flow.as_text_diagram())
+# prepare -> extract -> validate -> retry -> quality
+```
+
+Each flow step is a small Pydantic model with `name`, `purpose`, `inputs`, and `outputs`, so CLI tools or notebooks can display the pipeline without depending on LangGraph internals.
+
 The pipeline parses the PDF into sections (Abstract, Methods, Results, etc.) and uses targeted sections for extraction and verification instead of truncating the full text. Critical validation errors (e.g., AUC out of range) trigger an automatic retry with the relevant paper section.
 
 ### Simple extraction

@@ -399,6 +399,21 @@ class QualityScore(BaseModel):
     reasons: list[str] = Field(default_factory=list, description="Key factors affecting the score")
 
 
+class PipelineStep(BaseModel):
+    name: str = Field(description="Stable step identifier")
+    purpose: str = Field(description="What this step does")
+    inputs: list[str] = Field(default_factory=list, description="Inputs consumed by the step")
+    outputs: list[str] = Field(default_factory=list, description="Outputs produced by the step")
+    optional: bool = Field(default=False, description="Whether this step can be disabled")
+
+
+class PipelineFlow(BaseModel):
+    steps: list[PipelineStep] = Field(description="Ordered extraction pipeline steps")
+
+    def as_text_diagram(self) -> str:
+        return " -> ".join(step.name for step in self.steps)
+
+
 class PipelineResult(BaseModel):
     requirements: SDMRequirements
     sections_used: list[str] = Field(
