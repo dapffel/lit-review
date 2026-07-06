@@ -18,6 +18,8 @@ from .models import (
     FieldConfidence,
     FieldScore,
     FieldVerification,
+    FieldWeakness,
+    LearningReport,
     OccurrenceData,
     PaperSections,
     PerformanceMetric,
@@ -26,6 +28,7 @@ from .models import (
     PipelineStep,
     ProjectedScenario,
     QualityScore,
+    RunRecord,
     SDMModelSpec,
     SDMRequirements,
     SDMResults,
@@ -33,6 +36,7 @@ from .models import (
     ValidationReport,
     Violation,
 )
+from .run_store import RunStore, learn_from_runs
 from .sections import parse_sections
 from .validators import get_critical_errors, validate, violations_by_section
 
@@ -51,6 +55,8 @@ __all__ = [
     "FieldConfidence",
     "FieldScore",
     "FieldVerification",
+    "FieldWeakness",
+    "LearningReport",
     "OccurrenceData",
     "PaperSections",
     "PipelineFlow",
@@ -59,6 +65,8 @@ __all__ = [
     "PipelineStep",
     "ProjectedScenario",
     "QualityScore",
+    "RunRecord",
+    "RunStore",
     "SDMModelSpec",
     "SDMRequirements",
     "SDMResults",
@@ -69,6 +77,7 @@ __all__ = [
     "compute_quality",
     "export_error_analysis_csv",
     "get_critical_errors",
+    "learn_from_runs",
     "parse_sections",
     "score_confidence",
     "summarize_error_analysis",
