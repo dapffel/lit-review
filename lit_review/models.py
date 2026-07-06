@@ -467,6 +467,53 @@ class ErrorAnalysisSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Run history / learning models
+# ---------------------------------------------------------------------------
+
+
+class RunRecord(BaseModel):
+    """One persisted pipeline run: its field-level error-analysis rows plus the
+    metadata needed to slice history by paper, model, or time."""
+
+    paper_id: str | None = Field(default=None, description="Paper or run identifier")
+    timestamp: str = Field(description="UTC ISO-8601 time the run was recorded")
+    model: str | None = Field(default=None, description="Extraction model used for the run")
+    quality_score: float | None = Field(
+        default=None, description="Overall quality score, if scored"
+    )
+    quality_grade: str | None = Field(default=None, description="pass/marginal/fail, if scored")
+    has_gold: bool = Field(
+        default=False, description="Whether a gold annotation was available for this run"
+    )
+    rows: list[ErrorAnalysisRow] = Field(
+        default_factory=list, description="Per-field error-analysis rows for this run"
+    )
+
+
+class FieldWeakness(BaseModel):
+    """Aggregate reliability of one field path across many runs."""
+
+    field_path: str = Field(description="Field path with list indices normalized away")
+    total: int = Field(description="Times this field was observed across runs")
+    num_failures: int = Field(description="Times this field had a non-null failure_type")
+    failure_rate: float = Field(ge=0, le=1, description="num_failures / total")
+    by_failure_type: dict[str, int] = Field(
+        default_factory=dict, description="Failure counts broken down by failure_type"
+    )
+
+
+class LearningReport(BaseModel):
+    """What the accumulated run history says about where extraction is weakest."""
+
+    num_runs: int = Field(default=0)
+    num_papers: int = Field(default=0, description="Distinct paper_ids seen")
+    summary: ErrorAnalysisSummary = Field(default_factory=ErrorAnalysisSummary)
+    weak_fields: list[FieldWeakness] = Field(
+        default_factory=list, description="Field weaknesses, worst first"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Benchmark models
 # ---------------------------------------------------------------------------
 
