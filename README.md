@@ -95,12 +95,19 @@ The repository is intentionally small:
 - `lit_review/agent.py` orchestrates the PDF-to-`PipelineResult` flow.
 - `lit_review/models.py` defines all Pydantic request, extraction, validation, and result models.
 - `lit_review/prompts.py` keeps prompt text out of orchestration code.
+- `lit_review/run_store.py` and `advisor.py` persist runs and turn history into advice.
 - `lit_review/pdf.py`, `sections.py`, `memory.py`, and `validators.py` provide focused helpers.
 
 The default flow is:
 
 ```text
 prepare -> extract -> validate -> retry -> evaluate -> quality
+```
+
+With learning enabled (`use_advice=True` and an `advisor`), an `advise` step is inserted:
+
+```text
+prepare -> advise -> extract -> validate -> retry -> evaluate -> quality
 ```
 
 You can inspect the active flow without running an LLM call:
@@ -155,7 +162,48 @@ result = await agent.run_pipeline(
     run_evaluation=True,     # LLM cross-reference (default: True)
     retry_on_errors=True,    # retry critical fields (default: True)
     max_retries=1,           # retry attempts (default: 1)
+    use_advice=False,        # inject advice from similar past runs (default: False)
+    record_run=False,        # persist this run to the history log (default: False)
 )
+```
+
+## Learning from past runs
+
+Two independent retrieval paths feed extraction: `references=[...]` supplies *reference
+methodology* from other papers, while the **run-history loop** supplies *your own past
+mistakes on similar papers*. The second is opt-in and off by default.
+
+Each run can be persisted to an append-only JSONL log as a `RunRecord` (its per-field
+error analysis, a signature, and the prompt version). Before extracting a new paper, the
+`RunAdvisor` embeds its abstract+methods, retrieves the nearest-neighbor past runs, and
+distills their **confirmed** failures (gold mismatches, verifier-flagged contradictions,
+validation errors) into per-field cautions that are injected into the extraction prompt —
+"scrutinize these fields," never "use these values."
+
+```python
+from lit_review import SDMExtractionAgent, RunStore, RunAdvisor
+
+store = RunStore()                       # runs/runs.jsonl by default
+agent = SDMExtractionAgent(advisor=RunAdvisor(store))
+
+# Advice from similar past runs, and grow the corpus with this run.
+result = await agent.run_pipeline("paper.pdf", use_advice=True, record_run=True)
+```
+
+With no advisor or an empty log the pipeline is unchanged (clean cold start). Advice is
+scoped to the current prompt version, so it can't go stale after a prompt change, and a
+paper never advises itself on a re-run.
+
+For offline analysis, aggregate the whole history into a report of the weakest fields —
+the input to prompt/validator tuning:
+
+```python
+from lit_review import RunStore, learn_from_runs
+
+report = learn_from_runs(RunStore().load())
+print(report.num_runs, report.num_papers)
+for w in report.weak_fields[:5]:
+    print(w.field_path, round(w.failure_rate, 2), w.by_failure_type)
 ```
 
 ## Output
