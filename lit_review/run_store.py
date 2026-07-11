@@ -47,6 +47,8 @@ class RunStore:
         gold: SDMRequirements | None = None,
         paper_id: str | None = None,
         model: str | None = None,
+        signature: str = "",
+        prompt_version: str | None = None,
     ) -> RunRecord:
         """Turn a pipeline result into a ``RunRecord`` and append it to the log."""
         rows = analyze_pipeline_result(result, gold=gold, paper_id=paper_id)
@@ -57,6 +59,8 @@ class RunStore:
             quality_score=result.quality.score if result.quality is not None else None,
             quality_grade=result.quality.grade if result.quality is not None else None,
             has_gold=gold is not None,
+            prompt_version=prompt_version,
+            signature=signature,
             rows=rows,
         )
         self.append(record)

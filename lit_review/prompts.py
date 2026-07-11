@@ -36,8 +36,16 @@ EXTRACTION_SYSTEM = (
     "- Include software versions when provided."
 )
 
+# Bumped whenever EXTRACTION_SYSTEM or the extraction message format changes, so run
+# history can be scoped to advice that still reflects how extraction behaves today.
+EXTRACTION_PROMPT_VERSION = "v1"
+
 EXTRACTION_PAPER_PREFIX = "SDM Paper:\n\n"
 EXTRACTION_CONTEXT_PREFIX = "Reference SDM methodology context:\n"
+EXTRACTION_ADVICE_PREFIX = (
+    "Guidance from similar past extractions — scrutinize these fields, but only "
+    "record what THIS paper actually states (do not copy values from other papers):\n"
+)
 
 # ---------------------------------------------------------------------------
 # Evaluation (cross-reference check)

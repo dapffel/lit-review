@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import instructor
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from .advisor import RunAdvisor
 from .memory import VectorMemory
 from .models import (
     AgentConfig,
@@ -17,6 +19,7 @@ from .models import (
     ExtractionEval,
     FieldConfidence,
     OccurrenceData,
+    PaperAdvice,
     PaperSections,
     PipelineFlow,
     PipelineResult,
@@ -33,8 +36,10 @@ from .prompts import (
     EVAL_EXTRACTION_PREFIX,
     EVAL_PAPER_PREFIX,
     EVAL_SYSTEM,
+    EXTRACTION_ADVICE_PREFIX,
     EXTRACTION_CONTEXT_PREFIX,
     EXTRACTION_PAPER_PREFIX,
+    EXTRACTION_PROMPT_VERSION,
     EXTRACTION_SYSTEM,
     RETRY_EXTRACTION_PREFIX,
     RETRY_PAPER_PREFIX,
@@ -65,11 +70,14 @@ class _PipelineState(TypedDict, total=False):
     references: list[str] | None
     run_validation: bool
     run_evaluation: bool
+    use_advice: bool
     retries_remaining: int
     # Derived during the run
     text: str
     sections: PaperSections
     context: str
+    signature: str
+    advice: PaperAdvice
     requirements: SDMRequirements
     confidence: ConfidenceReport
     validation: ValidationReport | None
@@ -93,6 +101,12 @@ SECTION_TO_MODEL: dict[str, type[BaseModel]] = {
 }
 
 
+def _paper_id_for(pdf_path: str) -> str:
+    """Stable per-paper id from the PDF filename, so re-runs share an id and a paper
+    can exclude its own history when asking for advice."""
+    return Path(pdf_path).stem
+
+
 def _retrieval_query(text: str) -> str:
     paragraphs = [paragraph.strip() for paragraph in text.split("\n\n")]
     for paragraph in paragraphs:
@@ -101,7 +115,7 @@ def _retrieval_query(text: str) -> str:
     return text[:QUERY_CHARS]
 
 
-def _build_extraction_content(text: str, context: str, max_chars: int) -> str:
+def _build_paper_content(text: str, context: str, max_chars: int) -> str:
     if not context:
         return f"{EXTRACTION_PAPER_PREFIX}{text}"[:max_chars]
 
@@ -115,6 +129,20 @@ def _build_extraction_content(text: str, context: str, max_chars: int) -> str:
         return f"{EXTRACTION_CONTEXT_PREFIX}{context}\n\n{EXTRACTION_PAPER_PREFIX}"[:max_chars]
 
     return f"{prefix}{text[:available]}"
+
+
+def _build_extraction_content(text: str, context: str, max_chars: int, *, advice: str = "") -> str:
+    """Assemble the extraction user message: optional advice block, then context+paper.
+
+    The advice block is short (a handful of field cautions), so it's reserved off the
+    top of the budget and the paper/context fill what remains.
+    """
+    if not advice:
+        return _build_paper_content(text, context, max_chars)
+
+    advice_prefix = f"{EXTRACTION_ADVICE_PREFIX}{advice}\n\n"
+    body = _build_paper_content(text, context, max(0, max_chars - len(advice_prefix)))
+    return f"{advice_prefix}{body}"
 
 
 def _build_eval_content(requirements_json: str, paper_text: str, max_chars: int) -> str:
@@ -289,12 +317,19 @@ _PIPELINE_STEPS: tuple[PipelineStep, ...] = (
         name="prepare",
         purpose="Extract PDF text, parse paper sections, and retrieve optional context.",
         inputs=["pdf_path", "references"],
-        outputs=["text", "sections", "context"],
+        outputs=["text", "sections", "context", "signature"],
+    ),
+    PipelineStep(
+        name="advise",
+        purpose="Retrieve similar past runs and distill their failures into field cautions.",
+        inputs=["signature"],
+        outputs=["advice"],
+        optional=True,
     ),
     PipelineStep(
         name="extract",
         purpose="Ask the LLM for validated SDMRequirements from targeted paper text.",
-        inputs=["sections", "context"],
+        inputs=["sections", "context", "advice"],
         outputs=["requirements", "confidence"],
     ),
     PipelineStep(
@@ -328,8 +363,9 @@ _PIPELINE_STEPS: tuple[PipelineStep, ...] = (
 
 
 class SDMExtractionAgent:
-    def __init__(self, config: AgentConfig | None = None):
+    def __init__(self, config: AgentConfig | None = None, *, advisor: RunAdvisor | None = None):
         self.config = config or AgentConfig()
+        self.advisor = advisor
         self.client = instructor.from_litellm(litellm.acompletion)
         self._pipeline = self._build_pipeline_graph()
 
@@ -339,6 +375,7 @@ class SDMExtractionAgent:
         run_validation: bool = True,
         run_evaluation: bool = True,
         retry_on_errors: bool = True,
+        use_advice: bool = False,
     ) -> PipelineFlow:
         """Public, LLM-free view of the steps run_pipeline would run for the given flags.
 
@@ -348,6 +385,7 @@ class SDMExtractionAgent:
         self._assert_steps_match_graph()
         # Each optional step is gated by the same flags run_pipeline uses.
         runs = {
+            "advise": use_advice and self.advisor is not None,
             "validate": run_validation,
             "retry": run_validation and retry_on_errors,
             "evaluate": run_evaluation,
@@ -485,11 +523,12 @@ class SDMExtractionAgent:
     def _build_pipeline_graph(self) -> Any:
         """Compile the run_pipeline flow as a stateful graph with a retry loop.
 
-        prepare → extract → validate → (critical errors & retries left? → retry ↺)
-                                     → evaluate → quality → END
+        prepare → advise → extract → validate → (critical errors & retries left? → retry ↺)
+                                              → evaluate → quality → END
         """
         graph = StateGraph(_PipelineState)
         graph.add_node("prepare", self._prepare_node)
+        graph.add_node("advise", self._advise_node)
         graph.add_node("extract", self._extract_node)
         graph.add_node("validate", self._validate_node)
         graph.add_node("retry", self._retry_node)
@@ -497,7 +536,8 @@ class SDMExtractionAgent:
         graph.add_node("quality", self._quality_node)
 
         graph.add_edge(START, "prepare")
-        graph.add_edge("prepare", "extract")
+        graph.add_edge("prepare", "advise")
+        graph.add_edge("advise", "extract")
         graph.add_edge("extract", "validate")
         graph.add_conditional_edges(
             "validate", self._should_retry, {"retry": "retry", "evaluate": "evaluate"}
@@ -515,7 +555,20 @@ class SDMExtractionAgent:
             raise ValueError("PDF contains no extractable text")
         sections = parse_sections(text)
         context = await self._retrieve_context(text, state.get("references"))
-        return {"text": text, "sections": sections, "context": context}
+        # Abstract + methods is what drives extraction errors, so use it as the
+        # similarity key for finding comparable past runs.
+        signature = sections.get_sections("abstract", "methods")
+        return {"text": text, "sections": sections, "context": context, "signature": signature}
+
+    async def _advise_node(self, state: _PipelineState) -> dict[str, Any]:
+        if not state.get("use_advice") or self.advisor is None:
+            return {"advice": PaperAdvice()}
+        advice = await self.advisor.advise(
+            state["signature"],
+            exclude_paper_id=_paper_id_for(state["pdf_path"]),
+            prompt_version=EXTRACTION_PROMPT_VERSION,
+        )
+        return {"advice": advice}
 
     async def _extract_node(self, state: _PipelineState) -> dict[str, Any]:
         sections = state["sections"]
@@ -524,8 +577,13 @@ class SDMExtractionAgent:
             extraction_text = sections.get_sections("abstract", "methods", "results")
         else:
             extraction_text = sections.raw_text
+        advice = state.get("advice")
+        advice_block = advice.as_prompt_block() if advice is not None else ""
         user_content = _build_extraction_content(
-            extraction_text, state["context"], self.config.max_input_chars
+            extraction_text,
+            state["context"],
+            self.config.max_input_chars,
+            advice=advice_block,
         )
 
         requirements = await self.client.create(
@@ -603,18 +661,21 @@ class SDMExtractionAgent:
         run_evaluation: bool = True,
         retry_on_errors: bool = True,
         max_retries: int = 1,
+        use_advice: bool = False,
+        record_run: bool = False,
     ) -> PipelineResult:
         initial: _PipelineState = {
             "pdf_path": pdf_path,
             "references": references,
             "run_validation": run_validation,
             "run_evaluation": run_evaluation,
+            "use_advice": use_advice,
             "retries_remaining": max_retries if (run_validation and retry_on_errors) else 0,
             "retries_performed": 0,
         }
         final = await self._pipeline.ainvoke(initial)
         sections: PaperSections = final["sections"]
-        return PipelineResult(
+        result = PipelineResult(
             requirements=final["requirements"],
             sections_used=list(sections.sections.keys()),
             confidence=final.get("confidence"),
@@ -623,6 +684,16 @@ class SDMExtractionAgent:
             quality=final.get("quality"),
             retries_performed=final.get("retries_performed", 0),
         )
+        if record_run and self.advisor is not None:
+            # Grow the corpus this run learned from, so later runs on similar papers benefit.
+            self.advisor.store.record(
+                result,
+                paper_id=_paper_id_for(pdf_path),
+                model=self.config.model,
+                signature=final.get("signature", ""),
+                prompt_version=EXTRACTION_PROMPT_VERSION,
+            )
+        return result
 
     async def __aenter__(self):
         return self

@@ -1,3 +1,4 @@
+from .advisor import RunAdvisor, synthesize_advice
 from .agent import SDMExtractionAgent, compute_quality, score_confidence
 from .benchmark import Benchmark
 from .error_analysis import (
@@ -16,11 +17,13 @@ from .models import (
     EvaluationProtocol,
     ExtractionEval,
     FieldConfidence,
+    FieldHint,
     FieldScore,
     FieldVerification,
     FieldWeakness,
     LearningReport,
     OccurrenceData,
+    PaperAdvice,
     PaperSections,
     PerformanceMetric,
     PipelineFlow,
@@ -53,11 +56,13 @@ __all__ = [
     "EvaluationProtocol",
     "ExtractionEval",
     "FieldConfidence",
+    "FieldHint",
     "FieldScore",
     "FieldVerification",
     "FieldWeakness",
     "LearningReport",
     "OccurrenceData",
+    "PaperAdvice",
     "PaperSections",
     "PipelineFlow",
     "PerformanceMetric",
@@ -65,6 +70,7 @@ __all__ = [
     "PipelineStep",
     "ProjectedScenario",
     "QualityScore",
+    "RunAdvisor",
     "RunRecord",
     "RunStore",
     "SDMModelSpec",
@@ -81,6 +87,7 @@ __all__ = [
     "parse_sections",
     "score_confidence",
     "summarize_error_analysis",
+    "synthesize_advice",
     "validate",
     "violations_by_section",
 ]

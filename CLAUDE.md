@@ -29,21 +29,29 @@ Single agent that extracts species distribution modeling (SDM) requirements from
 
 ### Pipeline flow (`run_pipeline`)
 
-`run_pipeline` is implemented as a **LangGraph `StateGraph`** (`prepare → extract → validate → [retry loop] → evaluate → quality`); the retry loop is a conditional edge that re-runs while critical validation errors remain and retries are left. The steps it performs:
+`run_pipeline` is implemented as a **LangGraph `StateGraph`** (`prepare → advise → extract → validate → [retry loop] → evaluate → quality`); the retry loop is a conditional edge that re-runs while critical validation errors remain and retries are left. The steps it performs:
 
 1. Extract PDF text via PyMuPDF
 2. Parse into sections (Abstract, Methods, Results, etc.) via regex heuristics
 3. Optionally retrieve context from reference SDM papers via vector memory
-4. Extract `SDMRequirements` using targeted paper sections (not full truncated text)
-5. Score evidence confidence per section (rule-based, no LLM call)
-6. Validate constraints (metric ranges, species format, occurrence consistency)
-7. Retry critical field errors with targeted re-extraction from relevant sections
-8. Cross-reference extraction against the paper using a separate eval model
-9. Compute overall quality score (pass/marginal/fail) combining validation, eval, and confidence
+4. Optionally retrieve advice from *similar past runs* (`use_advice=True`, requires an `advisor`) and inject field cautions into the extraction prompt
+5. Extract `SDMRequirements` using targeted paper sections (not full truncated text)
+6. Score evidence confidence per section (rule-based, no LLM call)
+7. Validate constraints (metric ranges, species format, occurrence consistency)
+8. Retry critical field errors with targeted re-extraction from relevant sections
+9. Cross-reference extraction against the paper using a separate eval model
+10. Compute overall quality score (pass/marginal/fail) combining validation, eval, and confidence
+11. Optionally persist the run (`record_run=True`) so later runs can learn from it
+
+### Run history & learning loop
+
+Two orthogonal RAG paths feed extraction: `VectorMemory` retrieves *reference methodology* from other papers, while `RunStore`/`RunAdvisor` retrieve *your own past mistakes on similar papers*. `RunStore` appends one `RunRecord` per run (with a signature and `prompt_version`) to a JSONL log; `RunAdvisor.advise()` embeds the current paper's abstract+methods, finds nearest-neighbor past runs, and `synthesize_advice()` distills their **confirmed** failures (gold mismatch / verifier-flagged / validation error) into per-field `FieldHint`s. `learn_from_runs()` aggregates the whole log into a `LearningReport` for offline prompt/validator tuning. All of this is opt-in; with no advisor or empty history the pipeline is unchanged.
 
 ### Modules
 
-- **`agent.py`** — `SDMExtractionAgent` with two entry points: `extract_from_pdf()` for simple extraction, `run_pipeline()` for the full flow returning `PipelineResult`. `run_pipeline()` is orchestrated by a LangGraph `StateGraph` (nodes `_prepare_node`/`_extract_node`/`_validate_node`/`_retry_node`/`_evaluate_node`/`_quality_node`, threaded through the `_PipelineState` TypedDict). Also contains `score_confidence()` and `compute_quality()`.
+- **`agent.py`** — `SDMExtractionAgent` (optionally constructed with an `advisor`) with two entry points: `extract_from_pdf()` for simple extraction, `run_pipeline()` for the full flow returning `PipelineResult`. `run_pipeline()` is orchestrated by a LangGraph `StateGraph` (nodes `_prepare_node`/`_advise_node`/`_extract_node`/`_validate_node`/`_retry_node`/`_evaluate_node`/`_quality_node`, threaded through the `_PipelineState` TypedDict). Also contains `score_confidence()` and `compute_quality()`.
+- **`run_store.py`** — `RunStore` persists a `RunRecord` per run to a JSONL log; `learn_from_runs()` aggregates history into a `LearningReport` of the weakest fields.
+- **`advisor.py`** — `RunAdvisor.advise()` retrieves nearest-neighbor past runs (FAISS over signature embeddings) and the pure `synthesize_advice()` turns their confirmed failures into `PaperAdvice`.
 - **`models.py`** — Pydantic v2 models: `AgentConfig` (with separate `model` and `eval_model`), `PaperSections`, nested `SDMRequirements` with typed fields, `ExtractionEval` (counts are `@computed_field`), `FieldConfidence`/`ConfidenceReport`, `QualityScore`/`PipelineResult`, `ValidationReport`, benchmark models.
 - **`sections.py`** — `parse_sections()` splits PDF text by detected headings. `SECTION_MAP` maps extraction fields to relevant paper sections. `get_text_for_field()` retrieves targeted text.
 - **`prompts.py`** — All prompt text for extraction, evaluation, and retry, separated from pipeline logic.
