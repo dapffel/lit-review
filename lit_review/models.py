@@ -485,6 +485,14 @@ class RunRecord(BaseModel):
     has_gold: bool = Field(
         default=False, description="Whether a gold annotation was available for this run"
     )
+    prompt_version: str | None = Field(
+        default=None,
+        description="Extraction prompt version, so advice can be filtered to the current prompt.",
+    )
+    signature: str = Field(
+        default="",
+        description="Text (abstract + methods) used to find papers similar to this one.",
+    )
     rows: list[ErrorAnalysisRow] = Field(
         default_factory=list, description="Per-field error-analysis rows for this run"
     )
@@ -511,6 +519,45 @@ class LearningReport(BaseModel):
     weak_fields: list[FieldWeakness] = Field(
         default_factory=list, description="Field weaknesses, worst first"
     )
+
+
+# ---------------------------------------------------------------------------
+# Advice models — RAG-style guidance from similar past runs
+# ---------------------------------------------------------------------------
+
+
+class FieldHint(BaseModel):
+    """A caution about one field, distilled from confirmed failures on similar papers."""
+
+    field_path: str = Field(description="Field path with list indices normalized away")
+    message: str = Field(description="Human-readable guidance to scrutinize this field")
+    based_on_n: int = Field(
+        gt=0, description="Number of similar papers whose failures back this hint"
+    )
+    failure_breakdown: dict[str, int] = Field(
+        default_factory=dict, description="Confirmed failure_type counts across the neighbors"
+    )
+    example_evidence: str | None = Field(
+        default=None, description="One real evidence snippet from a neighbor, for context"
+    )
+
+
+class PaperAdvice(BaseModel):
+    """Guidance for the current run, derived from the most similar past runs."""
+
+    hints: list[FieldHint] = Field(
+        default_factory=list, description="Field cautions, most-supported first"
+    )
+    neighbor_ids: list[str] = Field(
+        default_factory=list, description="paper_ids of the similar runs the advice draws on"
+    )
+
+    def as_prompt_block(self) -> str:
+        """Render the advice as an extraction-prompt block, or '' when there's nothing to say."""
+        if not self.hints:
+            return ""
+        lines = [f"- {hint.field_path}: {hint.message}" for hint in self.hints]
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

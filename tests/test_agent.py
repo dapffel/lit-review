@@ -16,6 +16,8 @@ from lit_review import (
     PipelineResult,
     ProjectedScenario,
     QualityScore,
+    RunAdvisor,
+    RunStore,
     SDMExtractionAgent,
     SDMModelSpec,
     SDMRequirements,
@@ -645,11 +647,25 @@ def test_describe_flow_respects_disabled_steps():
     assert flow.as_text_diagram() == "prepare -> extract -> quality"
 
 
-def test_describe_flow_matches_graph_nodes():
-    # The described steps must equal the compiled graph's real nodes, so describe_flow
-    # can't drift from _build_pipeline_graph. Names come straight from the graph.
+def test_describe_flow_includes_advise_when_enabled():
+    agent = SDMExtractionAgent(advisor=RunAdvisor(RunStore()))
+    flow = agent.describe_flow(use_advice=True)
+    assert flow.as_text_diagram() == (
+        "prepare -> advise -> extract -> validate -> retry -> evaluate -> quality"
+    )
+
+
+def test_describe_flow_omits_advise_without_advisor():
+    # use_advice is on, but no advisor is wired, so the step can't run.
     agent = SDMExtractionAgent()
-    described = {step.name for step in agent.describe_flow().steps}
+    assert "advise" not in {step.name for step in agent.describe_flow(use_advice=True).steps}
+
+
+def test_describe_flow_matches_graph_nodes():
+    # With every optional step enabled, the described steps must equal the compiled
+    # graph's real nodes, so describe_flow can't drift from _build_pipeline_graph.
+    agent = SDMExtractionAgent(advisor=RunAdvisor(RunStore()))
+    described = {step.name for step in agent.describe_flow(use_advice=True).steps}
     assert described == agent._graph_node_names()
 
 
